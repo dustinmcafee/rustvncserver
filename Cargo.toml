@@ -1,0 +1,40 @@
+[package]
+name = "rustvncserver"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dustin McAfee"]
+license = "GPL-2.0"
+description = "Pure Rust VNC (RFB) server implementation with full protocol support"
+repository = "https://github.com/dustinmcafee/rustvncserver"
+keywords = ["vnc", "rfb", "remote-desktop", "server"]
+categories = ["network-programming", "multimedia"]
+readme = "README.md"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util"] }
+bytes = "1"
+flate2 = "1.0"          # Zlib compression
+png = "0.17"            # PNG encoding for TightPng
+log = "0.4"
+thiserror = "1.0"       # Error handling
+
+[features]
+default = []
+turbojpeg = []          # Enable TurboJPEG for better JPEG performance (requires libjpeg-turbo)
+
+[dev-dependencies]
+tokio-test = "0.4"
+env_logger = "0.11"
+
+[[example]]
+name = "simple_server"
+path = "examples/simple_server.rs"
+
+[[example]]
+name = "headless_server"
+path = "examples/headless_server.rs"
+
+[profile.release]
+lto = true              # Link-time optimization
+codegen-units = 1       # Better optimization
+opt-level = 3           # Maximum optimization
