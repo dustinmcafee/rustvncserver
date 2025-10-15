@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC framebuffer management and dirty region tracking.
 //!
 //! This module provides the core framebuffer functionality for the VNC server, including:
@@ -8,7 +23,7 @@
 //!
 //! # Architecture
 //!
-//! The framebuffer uses a push-based update model similar to libvncserver, where changes
+//! The framebuffer uses a push-based update model similar to standard VNC protocol, where changes
 //! are automatically propagated to all connected clients through `DirtyRegionReceiver` handles.
 //! This eliminates the need for clients to poll for changes.
 //!
@@ -119,7 +134,7 @@ impl DirtyRegion {
     ///
     /// This function returns a new `DirtyRegion` representing the overlapping area
     /// of the two regions. If the regions do not intersect, `None` is returned.
-    /// This behavior matches libvncserver's `sraRgnAnd` operation.
+    /// This behavior matches standard VNC protocol's `sraRgnAnd` operation.
     ///
     /// # Arguments
     ///
@@ -158,7 +173,7 @@ impl DirtyRegion {
 /// A struct for receiving notifications about dirty (modified) regions in the framebuffer.
 ///
 /// This uses a `Weak` reference to the client's `modified_regions` to allow for a
-/// push-based update model, similar to how libvncserver handles dirty region updates.
+/// push-based update model, similar to how standard VNC protocol handles dirty region updates.
 #[derive(Clone)]
 pub struct DirtyRegionReceiver {
     /// A `Weak` reference to a `RwLock`-protected vector of `DirtyRegion`s.
@@ -184,7 +199,7 @@ impl DirtyRegionReceiver {
     /// This function handles merging the new region with any existing intersecting regions
     /// to maintain a minimal set of non-overlapping dirty regions. It also includes logic
     /// to prevent memory exhaustion by merging all regions if the list grows too large.
-    /// This behavior is modeled after libvncserver's region merging.
+    /// This behavior is modeled after standard VNC protocol's region merging.
     ///
     /// # Arguments
     ///
@@ -194,7 +209,7 @@ impl DirtyRegionReceiver {
             let mut regions = regions_arc.write().await;
 
             // Merge with ALL intersecting regions (not just first)
-            // This matches libvncserver's proper region merging behavior
+            // This matches standard VNC protocol's proper region merging behavior
             let mut merged_region = region;
             regions.retain(|existing| {
                 if existing.intersects(&merged_region) {
@@ -276,7 +291,7 @@ impl Framebuffer {
     /// Registers a `DirtyRegionReceiver` to be notified of framebuffer updates.
     ///
     /// This method allows clients to subscribe to dirty region notifications, similar to
-    /// libvncserver's `rfbGetClientIterator` pattern.
+    /// standard VNC protocol's `rfbGetClientIterator` pattern.
     ///
     /// # Arguments
     ///
@@ -296,7 +311,7 @@ impl Framebuffer {
 
     /// Marks a rectangular region of the framebuffer as dirty and notifies all registered receivers.
     ///
-    /// This behavior is analogous to libvncserver's `rfbMarkRegionAsModified` function.
+    /// This behavior is analogous to standard VNC protocol's `rfbMarkRegionAsModified` function.
     ///
     /// # Arguments
     ///
@@ -308,7 +323,7 @@ impl Framebuffer {
         let region = DirtyRegion::new(x, y, width, height);
 
         // Clone receivers while holding lock briefly to prevent deadlock
-        // (libvncserver uses client iterator for similar thread safety)
+        // (standard VNC protocol uses client iterator for similar thread safety)
         let receivers_copy = {
             let receivers = self.receivers.read().await;
             receivers.clone()
@@ -338,7 +353,7 @@ impl Framebuffer {
     ///
     /// This function compares the new data with the existing framebuffer content and
     /// identifies the bounding box of the changes, marking only the modified region as dirty.
-    /// This approach is similar to libvncserver's handling in `androidvncserver.c`.
+    /// This approach is similar to standard VNC protocol's handling in `androidvncserver.c`.
     ///
     /// # Arguments
     ///
@@ -563,7 +578,7 @@ impl Framebuffer {
     /// which dramatically reduces bandwidth for scrolling and window dragging operations.
     ///
     /// NOTE: This auto-detection method is no longer used. CopyRect now uses explicit
-    /// tracking via schedule_copy_region() and do_copy_region(), matching libvncserver's approach.
+    /// tracking via schedule_copy_region() and do_copy_region(), matching standard VNC protocol's approach.
     ///
     /// # Arguments
     ///
@@ -711,7 +726,7 @@ impl Framebuffer {
     /// as much of the existing content as possible. Any content that fits within the new
     /// dimensions is copied over; areas outside are clipped, and new areas are filled with black.
     ///
-    /// This is equivalent to libvncserver's `rfbNewFramebuffer` function.
+    /// This is equivalent to standard VNC protocol's `rfbNewFramebuffer` function.
     ///
     /// Note: This method uses interior mutability through RwLock, so it doesn't require `&mut self`.
     /// The width and height fields themselves cannot be updated atomically with the data,
@@ -793,11 +808,11 @@ impl Framebuffer {
         Ok(())
     }
 
-    /// Performs a copy rectangle operation within the framebuffer (libvncserver style).
+    /// Performs a copy rectangle operation within the framebuffer (standard VNC protocol style).
     ///
     /// This method copies pixel data from one region of the framebuffer to another,
     /// handling overlapping regions correctly by choosing the appropriate iteration direction.
-    /// This is the equivalent of libvncserver's `rfbDoCopyRegion` function.
+    /// This is the equivalent of standard VNC protocol's `rfbDoCopyRegion` function.
     ///
     /// # Arguments
     ///
@@ -859,7 +874,7 @@ impl Framebuffer {
 
         // Copy rectangle within framebuffer
         // Choose iteration direction based on dx/dy to handle overlapping regions correctly
-        // (libvncserver uses sraRgnGetReverseIterator for this)
+        // (standard VNC protocol uses sraRgnGetReverseIterator for this)
         if dy < 0 {
             // Copy top to bottom (forward)
             for row in 0..height {

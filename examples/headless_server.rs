@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! Headless VNC server example with animated content.
 //!
 //! This example creates a VNC server that continuously updates the framebuffer
@@ -7,7 +22,7 @@
 //! Usage:
 //!   cargo run --example headless_server
 
-use rustvncserver::{VncServer, ServerEvent};
+use rustvncserver::VncServer;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time;
@@ -22,12 +37,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     const WIDTH: u16 = 640;
     const HEIGHT: u16 = 480;
 
-    let server = VncServer::new(WIDTH, HEIGHT);
+    let (server, mut events) = VncServer::new(
+        WIDTH,
+        HEIGHT,
+        "RustVNC Animated".to_string(),
+        None  // No password
+    );
+
+    // Handle events in background
+    tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            match event {
+                rustvncserver::server::ServerEvent::ClientConnected { client_id } => {
+                    println!("Client {} connected", client_id);
+                }
+                rustvncserver::server::ServerEvent::ClientDisconnected { client_id } => {
+                    println!("Client {} disconnected", client_id);
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // Get framebuffer reference before moving server
+    let framebuffer = server.framebuffer().clone();
 
     // Start server in background
-    let server_clone = server.clone();
     tokio::spawn(async move {
-        if let Err(e) = server_clone.listen(5900).await {
+        if let Err(e) = server.listen(5900).await {
             eprintln!("Server error: {}", e);
         }
     });
@@ -58,7 +95,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Update framebuffer
-        server.update_framebuffer(&pixels, 0, 0, WIDTH, HEIGHT);
+        framebuffer.update_cropped(&pixels, 0, 0, WIDTH, HEIGHT).await.expect("Failed to update framebuffer");
 
         // Next frame
         frame = frame.wrapping_add(1);

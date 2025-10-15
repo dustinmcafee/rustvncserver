@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC Remote Framebuffer (RFB) protocol constants and structures.
 //!
 //! This module provides the fundamental building blocks for VNC protocol communication,
@@ -159,7 +174,7 @@ pub const ENCODING_ZYWRLE: i32 = 17;
 ///
 /// H.264 video compression for very low bandwidth scenarios.
 /// Note: This encoding is defined in the RFB protocol but NOT implemented.
-/// libvncserver removed H.264 support in v0.9.11 (2016) due to it being
+/// standard VNC protocol removed H.264 support in v0.9.11 (2016) due to it being
 /// broken and unmaintained. This constant exists for protocol compatibility only.
 #[allow(dead_code)]
 pub const ENCODING_H264: i32 = 0x48323634;

@@ -84,7 +84,7 @@ RustVNC is a complete VNC (Virtual Network Computing) server implementation writ
 | **CoRRE** | 4 | ✅ | N/A | 100% |
 | **Hextile** | 5 | ✅ | N/A | 100% |
 | **Zlib** | 6 | ✅ | ✅ Yes | 100% |
-| **Tight** | 7 | ✅ | Per-mode | 100% (all production modes) |
+| **Tight** | 7 | ✅ | ✅ Yes (4 streams) | 100% (all production modes) |
 | **ZlibHex** | 8 | ✅ | ✅ Yes | 100% |
 | **ZRLE** | 16 | ✅ | ✅ Yes | 100% |
 | **ZYWRLE** | 17 | ✅ | ✅ Yes | 100% |
@@ -390,19 +390,20 @@ fn encode_compact_length(len: usize) -> Vec<u8> {
 
 ### Stream Management
 
-Tight encoding uses multiple zlib streams:
+Tight encoding uses 4 persistent zlib streams per client:
 
-| Stream ID | Purpose | Current State |
-|-----------|---------|---------------|
-| 0 | Full-color data | Per-encoding stream |
-| 1 | Mono rect bitmaps | Per-encoding stream |
-| 2 | Indexed palette indices | Per-encoding stream |
+| Stream ID | Purpose | Implementation |
+|-----------|---------|----------------|
+| 0 | Full-color data | Persistent with shared dictionary |
+| 1 | Mono rect bitmaps | Persistent with shared dictionary |
+| 2 | Indexed palette indices | Persistent with shared dictionary |
 | 3 | Reserved | Not used |
 
 **libvncserver Comparison:**
-- libvncserver: 4 persistent streams per client with shared dictionaries
-- RustVNC: Per-encoding streams (simpler, minimal compression difference)
-- ⚠️ Minor difference with negligible impact on compression ratios
+- ✅ **100% identical**: Both use 4 persistent streams per client with shared dictionaries
+- ✅ Compression dictionary maintained across updates via Z_SYNC_FLUSH
+- ✅ Lazy initialization (streams created on first use)
+- ✅ Dynamic compression level changes supported
 
 ---
 
@@ -997,11 +998,6 @@ impl PixelFormat {
 
 #### Minor Differences
 
-**Tight Encoding Streams:**
-- libvncserver: 4 persistent streams with shared dictionaries
-- RustVNC: Per-encoding streams (simpler, minimal impact)
-- Impact: Negligible compression difference (~1-2%)
-
 **Concurrency Model:**
 - libvncserver: Threads
 - RustVNC: Async/await (Tokio)
@@ -1113,7 +1109,6 @@ let preferred_encoding = if encodings.contains(&ENCODING_TIGHT) {
 **Only missing features are low-priority optional items:**
 - Cursor updates (minimal benefit)
 - Desktop size notifications (works without it)
-- 4 persistent Tight streams (negligible compression difference)
 
 **RustVNC is production-ready as a libvncserver replacement.**
 

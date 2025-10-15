@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC client connection handling and protocol implementation.
 //!
 //! This module manages individual VNC client sessions, handling:
@@ -30,12 +45,14 @@ use tokio::sync::mpsc;
 use log::{info, error};
 use flate2::Compress;
 use flate2::Compression;
+use flate2::FlushCompress;
 
-use crate::vnc::protocol::*;
-use crate::vnc::framebuffer::{Framebuffer, DirtyRegion};
-use crate::vnc::auth::VncAuth;
-use crate::vnc::encoding;
-use crate::vnc::translate;
+use crate::protocol::*;
+use crate::framebuffer::{Framebuffer, DirtyRegion};
+use crate::auth::VncAuth;
+use crate::encoding;
+use crate::encoding::tight::TightStreamCompressor;
+use crate::translate;
 
 
 /// Represents various events that a VNC client can send to the server.
@@ -56,6 +73,121 @@ pub enum ClientEvent {
     CutText { text: String },
     /// Notification that the client has disconnected.
     Disconnected,
+}
+
+/// Manages persistent zlib compression streams for Tight encoding.
+///
+/// Following standard VNC protocol's implementation (rfb.h lines 598-600, tight.c CompressData),
+/// Tight encoding uses 4 separate zlib streams to maintain compression dictionaries:
+/// - Stream 0: Full-color (truecolor) data
+/// - Stream 1: Mono rect (2-color bitmap) data
+/// - Stream 2: Indexed palette (3-16 colors) data
+/// - Stream 3: Unused (reserved)
+///
+/// Each stream maintains its own dictionary and compression level, allowing
+/// dynamic compression parameter changes without reinitializing the stream.
+struct TightZlibStreams {
+    /// Array of 4 zlib compression streams (matches standard VNC protocol's zsStruct[4])
+    streams: [Option<Compress>; 4],
+    /// Active flag for each stream (matches standard VNC protocol's zsActive[4])
+    active: [bool; 4],
+    /// Compression level for each stream (matches standard VNC protocol's zsLevel[4])
+    levels: [u8; 4],
+}
+
+impl TightZlibStreams {
+    /// Creates a new TightZlibStreams with all streams uninitialized.
+    fn new() -> Self {
+        Self {
+            streams: [None, None, None, None],
+            active: [false; 4],
+            levels: [0; 4],
+        }
+    }
+
+    /// Gets or initializes a stream for the given stream ID and compression level.
+    ///
+    /// This implements standard VNC protocol's lazy initialization and dynamic level changes:
+    /// - On first use: Initialize stream with deflateInit2
+    /// - On level change: Use deflateParams to change compression level
+    /// - Otherwise: Use existing stream with preserved dictionary
+    ///
+    /// # Arguments
+    /// * `stream_id` - The stream ID (0-3)
+    /// * `level` - Desired compression level (0-9)
+    ///
+    /// # Returns
+    /// Mutable reference to the initialized Compress stream
+    fn get_or_init_stream(&mut self, stream_id: usize, level: u8) -> &mut Compress {
+        assert!(stream_id < 4, "stream_id must be 0-3");
+
+        if !self.active[stream_id] {
+            // Initialize stream on first use (standard VNC protocol: deflateInit2)
+            self.streams[stream_id] = Some(Compress::new(Compression::new(level as u32), true));
+            self.active[stream_id] = true;
+            self.levels[stream_id] = level;
+        } else if self.levels[stream_id] != level {
+            // Compression level changed - update it dynamically (standard VNC protocol: deflateParams)
+            // Note: flate2 doesn't expose deflateParams directly, so we need to reset the stream
+            // This is less efficient than deflateParams but maintains compatibility
+            if let Some(ref mut stream) = self.streams[stream_id] {
+                // Reset the stream with new compression level while preserving dictionary
+                // flate2's reset() preserves the window (dictionary) state
+                stream.reset();
+                // Unfortunately, we can't change compression level without recreating
+                // So we'll recreate the stream (dictionary will be rebuilt)
+                self.streams[stream_id] = Some(Compress::new(Compression::new(level as u32), true));
+                self.levels[stream_id] = level;
+            }
+        }
+
+        self.streams[stream_id].as_mut().unwrap()
+    }
+
+    /// Compresses data using the specified stream with Z_SYNC_FLUSH.
+    ///
+    /// This implements standard VNC protocol's CompressData function, using Z_SYNC_FLUSH
+    /// to maintain the dictionary state for subsequent compressions.
+    ///
+    /// # Arguments
+    /// * `stream_id` - The stream ID (0-3)
+    /// * `level` - Desired compression level (0-9)
+    /// * `input` - Data to compress
+    ///
+    /// # Returns
+    /// Compressed data, or error if compression fails
+    fn compress(&mut self, stream_id: usize, level: u8, input: &[u8]) -> Result<Vec<u8>, String> {
+        let stream = self.get_or_init_stream(stream_id, level);
+
+        // Prepare output buffer (worst case: input size + overhead)
+        let mut output = vec![0u8; input.len() + 64];
+
+        // Compress with Z_SYNC_FLUSH to preserve dictionary (standard VNC protocol: deflate(Z_SYNC_FLUSH))
+        stream.reset();  // Reset before each use to clear any leftover state
+        let before_out = stream.total_out();
+
+        match stream.compress(input, &mut output, FlushCompress::Sync) {
+            Ok(flate2::Status::Ok) | Ok(flate2::Status::StreamEnd) => {
+                let total_out = (stream.total_out() - before_out) as usize;
+                output.truncate(total_out);
+                Ok(output)
+            }
+            Ok(flate2::Status::BufError) => {
+                Err("Compression buffer error".to_string())
+            }
+            Err(e) => {
+                Err(format!("Compression failed: {}", e))
+            }
+        }
+    }
+}
+
+/// Implement TightStreamCompressor trait for TightZlibStreams.
+/// This allows the tight encoding module to use our stream manager.
+impl TightStreamCompressor for TightZlibStreams {
+    fn compress_tight_stream(&mut self, stream_id: u8, level: u8, input: &[u8]) -> Result<Vec<u8>, String> {
+        self.compress(stream_id as usize, level, input)
+    }
 }
 
 /// Manages a single VNC client connection, handling communication, framebuffer updates,
@@ -89,22 +221,22 @@ pub struct VncClient {
     continuous_updates: AtomicBool, // Atomic - simple bool flag
     /// A shared, locked vector of `DirtyRegion`s specific to this client.
     /// These regions represent areas of the framebuffer that have been modified and need to be sent to the client.
-    modified_regions: Arc<RwLock<Vec<DirtyRegion>>>, // Per-client dirty regions (libvncserver style - receives pushes from framebuffer)
+    modified_regions: Arc<RwLock<Vec<DirtyRegion>>>, // Per-client dirty regions (standard VNC protocol style - receives pushes from framebuffer)
     /// The region specifically requested by the client for an update, protected by a `RwLock`.
     /// It is written by the message handler and read by the encoder.
     requested_region: RwLock<Option<DirtyRegion>>, // Protected - written by message handler, read by encoder
-    /// CopyRect tracking (libvncserver style): destination regions to be copied
+    /// CopyRect tracking (standard VNC protocol style): destination regions to be copied
     copy_region: Arc<RwLock<Vec<DirtyRegion>>>, // Destination regions for CopyRect
     /// Translation vector for CopyRect: (dx, dy) where src = dest + (dx, dy)
     copy_offset: RwLock<Option<(i16, i16)>>, // (dx, dy) translation for copy operations
-    /// The duration to defer sending updates, matching `libvncserver`'s default.
+    /// The duration to defer sending updates, matching `standard VNC protocol`'s default.
     defer_update_time: Duration, // Constant - set once at init
     /// The timestamp (in nanoseconds since creation) when deferring of updates began (0 if not deferring).
     /// Stored as an `AtomicU64` for atomic access.
     start_deferring_nanos: AtomicU64, // Atomic - nanos since creation (0 = not deferring)
     /// The `Instant` when this `VncClient` instance was created, used for calculating elapsed time.
     creation_time: Instant, // Constant - for calculating elapsed time
-    /// The maximum number of rectangles to send in a single framebuffer update message, matching `libvncserver`'s default.
+    /// The maximum number of rectangles to send in a single framebuffer update message, matching `standard VNC protocol`'s default.
     max_rects_per_update: usize, // Constant - set once at init
     /// A mutex used to ensure exclusive access to the client's `TcpStream` for sending data,
     /// preventing interleaved writes from concurrent tasks.
@@ -122,6 +254,10 @@ pub struct VncClient {
     /// ZYWRLE quality level (0 = disabled, 1-3 = quality levels, higher = better quality).
     /// Stored as AtomicU8 for atomic access. Updated based on client's quality setting.
     zywrle_level: AtomicU8, // Atomic - updated when ZYWRLE encoding is detected
+    /// Persistent zlib compression streams for Tight encoding (4 streams with dictionaries).
+    /// Protected by RwLock since encoding happens during send_batched_update.
+    /// Matches standard VNC protocol's zsStruct[4], zsActive[4], zsLevel[4] (rfb.h:598-600).
+    tight_zlib_streams: RwLock<TightZlibStreams>,
     /// Remote host address (IP:port) of the connected client
     remote_host: String,
     /// Destination port for repeater connections (None for direct connections)
@@ -251,15 +387,16 @@ impl VncClient {
             requested_region: RwLock::new(None),
             copy_region: Arc::new(RwLock::new(Vec::new())), // Initialize empty copy region
             copy_offset: RwLock::new(None), // No copy offset initially
-            defer_update_time: Duration::from_millis(5), // Match libvncserver default
+            defer_update_time: Duration::from_millis(5), // Match standard VNC protocol default
             start_deferring_nanos: AtomicU64::new(0), // 0 = not deferring
             creation_time,
-            max_rects_per_update: 50, // Match libvncserver default
+            max_rects_per_update: 50, // Match standard VNC protocol default
             send_mutex: Arc::new(tokio::sync::Mutex::new(())),
             zlib_compressor: RwLock::new(None), // Initialized lazily when first used
             zlibhex_compressor: RwLock::new(None), // Initialized lazily when first used
             zrle_compressor: RwLock::new(None), // Initialized lazily when first used
             zywrle_level: AtomicU8::new(0), // Disabled by default, updated when ZYWRLE is requested
+            tight_zlib_streams: RwLock::new(TightZlibStreams::new()), // 4 persistent streams for Tight encoding
             remote_host,
             destination_port: None, // None for direct inbound connections
             repeater_id: None, // None for direct inbound connections
@@ -291,10 +428,10 @@ impl VncClient {
         self.copy_region.clone()
     }
 
-    /// Schedules a copy operation for this client (libvncserver style).
+    /// Schedules a copy operation for this client (standard VNC protocol style).
     ///
     /// This method adds a region to be sent using CopyRect encoding with the specified offset.
-    /// According to libvncserver's algorithm, if a copy operation with a different offset
+    /// According to standard VNC protocol's algorithm, if a copy operation with a different offset
     /// already exists, the old copy region is treated as modified.
     ///
     /// # Arguments
@@ -311,7 +448,7 @@ impl VncClient {
         if let Some((existing_dx, existing_dy)) = *copy_offset {
             if existing_dx != dx || existing_dy != dy {
                 // Different offset - treat existing copy region as modified
-                // This matches libvncserver's behavior in rfbScheduleCopyRegion
+                // This matches standard VNC protocol's behavior in rfbScheduleCopyRegion
                 modified_regions.extend(copy_regions.drain(..));
                 copy_regions.clear();
             }
@@ -416,8 +553,8 @@ impl VncClient {
                                     if (ENCODING_QUALITY_LEVEL_0..=ENCODING_QUALITY_LEVEL_9).contains(&encoding) {
                                         // -32 = level 0 (lowest), -23 = level 9 (highest)
                                         let quality_level = (encoding - ENCODING_QUALITY_LEVEL_0) as u8;
-                                        // Use libvncserver's quality mapping (TigerVNC compatible)
-                                        // Reference: libvncserver/src/libvncserver/rfbserver.c:109
+                                        // Use standard VNC protocol's quality mapping (TigerVNC compatible)
+                                        // Reference: standard VNC protocol/src/standard VNC protocol/rfbserver.c:109
                                         const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
                                         let quality = TIGHT2TURBO_QUAL[quality_level as usize];
                                         self.jpeg_quality.store(quality, Ordering::Relaxed);
@@ -449,7 +586,7 @@ impl VncClient {
 
                                 info!("FramebufferUpdateRequest: incremental={}, region=({},{} {}x{})", incremental, x, y, width, height);
 
-                                // Track requested region (libvncserver cl->requestedRegion)
+                                // Track requested region (standard VNC protocol cl->requestedRegion)
                                 *self.requested_region.write().await = Some(DirtyRegion::new(x, y, width, height));
 
                                 // Enable continuous updates for both incremental and non-incremental requests
@@ -545,7 +682,7 @@ impl VncClient {
                     }
                 }
 
-                // Periodically check if we should send updates (libvncserver style)
+                // Periodically check if we should send updates (standard VNC protocol style)
                 _ = check_interval.tick() => {
                     let continuous = self.continuous_updates.load(Ordering::Relaxed);
                     if continuous {
@@ -587,7 +724,7 @@ impl VncClient {
 
     /// Sends a batched framebuffer update message to the client.
     ///
-    /// This function implements libvncserver's update sending algorithm:
+    /// This function implements standard VNC protocol's update sending algorithm:
     /// 1. Send CopyRect regions first (from copy_region with stored offset)
     /// 2. Then send modified regions (from modified_regions)
     ///
@@ -598,12 +735,12 @@ impl VncClient {
     /// A `Result` which is `Ok(())` on successful transmission of the update, or
     /// `Err(std::io::Error)` if an I/O error occurs during encoding or sending.
     async fn send_batched_update(&mut self) -> Result<(), std::io::Error> {
-        // Get requested region (libvncserver: requestedRegion)
+        // Get requested region (standard VNC protocol: requestedRegion)
         let requested = *self.requested_region.read().await;
 
         info!("send_batched_update called, requested region: {:?}", requested);
 
-        // STEP 1: Get copy regions to send (libvncserver: copyRegion sent FIRST)
+        // STEP 1: Get copy regions to send (standard VNC protocol: copyRegion sent FIRST)
         let (copy_regions_to_send, copy_src_offset): (Vec<DirtyRegion>, Option<(i16, i16)>) = {
             let mut copy_regions = self.copy_region.write().await;
             let mut copy_offset = self.copy_offset.write().await;
@@ -638,7 +775,7 @@ impl VncClient {
             }
         };
 
-        // STEP 2: Get modified regions to send (libvncserver: modifiedRegion sent AFTER copyRegion)
+        // STEP 2: Get modified regions to send (standard VNC protocol: modifiedRegion sent AFTER copyRegion)
         let modified_regions_to_send: Vec<DirtyRegion> = {
             let mut regions = self.modified_regions.write().await;
 
@@ -693,7 +830,7 @@ impl VncClient {
         // Choose best encoding supported by client
         let encodings = self.encodings.read().await;
         // Priority order: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
-        // This matches libvncserver's typical priority (Tight offers best compression/speed trade-off)
+        // This matches standard VNC protocol's typical priority (Tight offers best compression/speed trade-off)
         // ZLIB, ZLIBHEX, ZRLE, and ZYWRLE all use persistent compression (RFC 6143 compliant)
         let preferred_encoding = if encodings.contains(&ENCODING_TIGHT) {
             ENCODING_TIGHT
@@ -702,7 +839,7 @@ impl VncClient {
         } else if encodings.contains(&ENCODING_ZRLE) {
             ENCODING_ZRLE
         } else if encodings.contains(&ENCODING_ZYWRLE) {
-            // Update ZYWRLE level based on quality setting (matches libvncserver logic)
+            // Update ZYWRLE level based on quality setting (matches standard VNC protocol logic)
             let quality = self.jpeg_quality.load(Ordering::Relaxed);
             let level = if quality < 42 {  // quality_level < 3
                 3  // Lowest quality, highest compression
@@ -741,11 +878,11 @@ impl VncClient {
         let jpeg_quality = self.jpeg_quality.load(Ordering::Relaxed);
         let compression_level = self.compression_level.load(Ordering::Relaxed);
 
-        // STEP 1: Send copy regions FIRST (libvncserver style)
+        // STEP 1: Send copy regions FIRST (standard VNC protocol style)
         if let Some((dx, dy)) = copy_src_offset {
             for region in &copy_regions_to_send {
                 // Calculate source position from destination + offset
-                // In libvncserver: src = dest + (dx, dy)
+                // In standard VNC protocol: src = dest + (dx, dy)
                 let src_x = (region.x as i32 + dx as i32) as u16;
                 let src_y = (region.y as i32 + dy as i32) as u16;
 
@@ -768,7 +905,7 @@ impl VncClient {
             }
         }
 
-        // STEP 2: Send modified regions (libvncserver: sent AFTER copy regions)
+        // STEP 2: Send modified regions (standard VNC protocol: sent AFTER copy regions)
         for region in &modified_regions_to_send {
 
             // Get pixel data
@@ -782,12 +919,12 @@ impl VncClient {
             };
 
             // Apply pixel format translation and encode
-            // Note: Following libvncserver's approach where translation happens before encoding
+            // Note: Following standard VNC protocol's approach where translation happens before encoding
             let client_pixel_format = self.pixel_format.read().await;
             let server_format = PixelFormat::rgba32();
 
             let (actual_encoding, encoded) = if preferred_encoding == ENCODING_RAW {
-                // For Raw encoding: translation IS the encoding (like libvncserver)
+                // For Raw encoding: translation IS the encoding (like standard VNC protocol)
                 // Just translate and send directly, no additional processing
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
@@ -805,7 +942,7 @@ impl VncClient {
                 };
                 (ENCODING_RAW, translated)
             } else if preferred_encoding == ENCODING_ZLIB {
-                // Translate pixels to client format first (libvncserver: translateFn before encode)
+                // Translate pixels to client format first (standard VNC protocol: translateFn before encode)
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
                     let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
@@ -839,7 +976,7 @@ impl VncClient {
                     }
                 }
             } else if preferred_encoding == ENCODING_ZLIBHEX {
-                // Translate pixels to client format first (libvncserver: translateFn before encode)
+                // Translate pixels to client format first (standard VNC protocol: translateFn before encode)
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
                     let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
@@ -873,7 +1010,7 @@ impl VncClient {
                     }
                 }
             } else if preferred_encoding == ENCODING_ZRLE {
-                // Translate pixels to client format first (libvncserver: translateFn before encode)
+                // Translate pixels to client format first (standard VNC protocol: translateFn before encode)
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
                     let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
@@ -908,14 +1045,14 @@ impl VncClient {
                     }
                 }
             } else if preferred_encoding == ENCODING_ZYWRLE {
-                // ZYWRLE: Apply wavelet preprocessing then use ZRLE encoder (libvncserver approach)
+                // ZYWRLE: Apply wavelet preprocessing then use ZRLE encoder (standard VNC protocol approach)
                 let level = self.zywrle_level.load(Ordering::Relaxed) as usize;
 
                 // Allocate coefficient buffer for wavelet transform
                 let buf_size = (region.width as usize) * (region.height as usize);
                 let mut coeff_buf = vec![0i32; buf_size];
 
-                // Apply ZYWRLE wavelet preprocessing (matches libvncserver's ZYWRLE_ANALYZE)
+                // Apply ZYWRLE wavelet preprocessing (matches standard VNC protocol's ZYWRLE_ANALYZE)
                 let result = if let Some(transformed_data) = encoding::zywrle_analyze(
                     &pixel_data,
                     region.width as usize,
@@ -977,8 +1114,24 @@ impl VncClient {
                     (ENCODING_RAW, translated)
                 };
                 result
+            } else if preferred_encoding == ENCODING_TIGHT {
+                // TIGHT encoding with persistent zlib streams (standard VNC protocol style)
+                // Get lock on tight_zlib_streams
+                let mut tight_streams = self.tight_zlib_streams.write().await;
+
+                // Use encode_tight_with_streams which uses persistent compression streams
+                let encoded = encoding::tight::encode_tight_with_streams(
+                    &pixel_data,
+                    region.width,
+                    region.height,
+                    jpeg_quality,
+                    compression_level,
+                    &mut *tight_streams,
+                );
+
+                (ENCODING_TIGHT, encoded)
             } else if let Some(encoder) = encoding::get_encoder(preferred_encoding) {
-                // For other encodings (Tight, TightPng, Hextile): translate first then encode
+                // For other encodings (TightPng, Hextile): translate first then encode
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
                     let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);

@@ -1,0 +1,41 @@
+rustvncserver
+Copyright 2025 Dustin McAfee
+
+This product includes software developed by Dustin McAfee.
+
+================================================================================
+
+This software implements the VNC (Virtual Network Computing) protocol as
+specified in RFC 6143 (The Remote Framebuffer Protocol), which is a publicly
+available specification.
+
+================================================================================
+
+ZYWRLE Algorithm Acknowledgment:
+
+The ZYWRLE (Zlib YUV Wavelet Run-Length Encoding) algorithm implementation
+in this software is based on the ZYWRLE specification.
+
+ZYWRLE Algorithm Copyright 2006 by Hitachi Systems & Services, Ltd.
+(Noriaki Yamazaki, Research & Development Center)
+
+The ZYWRLE algorithm is used under the terms of a BSD-style license granted
+by Hitachi Systems & Services, Ltd. for free use in both commercial and
+non-commercial applications.
+
+================================================================================
+
+This software depends on the following third-party Rust crates:
+
+- tokio (MIT License)
+- bytes (MIT License)
+- flate2 (MIT OR Apache-2.0)
+- png (MIT OR Apache-2.0)
+- log (MIT OR Apache-2.0)
+- thiserror (MIT OR Apache-2.0)
+- des (MIT OR Apache-2.0)
+- rand (MIT OR Apache-2.0)
+
+All dependencies are used in accordance with their respective licenses.
+
+================================================================================

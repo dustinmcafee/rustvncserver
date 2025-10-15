@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC server implementation for managing client connections and framebuffer distribution.
 //!
 //! This module provides the main VNC server functionality, including:
@@ -20,9 +35,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use log::{info, error};
 
-use crate::vnc::framebuffer::{Framebuffer, DirtyRegionReceiver};
-use crate::vnc::client::{VncClient, ClientEvent};
-use crate::vnc::repeater;
+use crate::framebuffer::{Framebuffer, DirtyRegionReceiver};
+use crate::client::{VncClient, ClientEvent};
+use crate::repeater;
 
 /// Global atomic counter for assigning unique client IDs.
 ///
@@ -49,31 +64,42 @@ pub struct VncServer {
 /// Enum representing various events that can occur within the VNC server.
 pub enum ServerEvent {
     /// A new client has connected to the VNC server.
-    ///
-    /// * `client_id` - The unique identifier for the newly connected client.
-    ClientConnected { client_id: usize },
+    ClientConnected {
+        /// The unique identifier for the newly connected client
+        client_id: usize
+    },
     /// A client has disconnected from the VNC server.
-    ///
-    /// * `client_id` - The unique identifier for the disconnected client.
-    ClientDisconnected { client_id: usize },
+    ClientDisconnected {
+        /// The unique identifier for the disconnected client
+        client_id: usize
+    },
     /// A key press or release event was received from a client.
-    ///
-    /// * `client_id` - The unique identifier of the client that sent the event.
-    /// * `down` - A boolean indicating if the key was pressed (`true`) or released (`false`).
-    /// * `key` - The VNC keysym value of the key.
-    KeyPress { client_id: usize, down: bool, key: u32 },
+    KeyPress {
+        /// The unique identifier of the client that sent the event
+        client_id: usize,
+        /// Boolean indicating if the key was pressed (`true`) or released (`false`)
+        down: bool,
+        /// The VNC keysym value of the key
+        key: u32
+    },
     /// A pointer (mouse) movement or button event was received from a client.
-    ///
-    /// * `client_id` - The unique identifier of the client that sent the event.
-    /// * `x` - The X coordinate of the pointer.
-    /// * `y` - The Y coordinate of the pointer.
-    /// * `button_mask` - A bitmask indicating the state of mouse buttons.
-    PointerMove { client_id: usize, x: u16, y: u16, button_mask: u8 },
+    PointerMove {
+        /// The unique identifier of the client that sent the event
+        client_id: usize,
+        /// The X coordinate of the pointer
+        x: u16,
+        /// The Y coordinate of the pointer
+        y: u16,
+        /// A bitmask indicating the state of mouse buttons
+        button_mask: u8
+    },
     /// Cut text (clipboard) data was received from a client.
-    ///
-    /// * `client_id` - The unique identifier of the client that sent the event.
-    /// * `text` - The cut text string.
-    CutText { client_id: usize, text: String },
+    CutText {
+        /// The unique identifier of the client that sent the event
+        client_id: usize,
+        /// The cut text string
+        text: String
+    },
 }
 
 impl VncServer {
@@ -195,7 +221,7 @@ impl VncServer {
 
         let client_arc = Arc::new(RwLock::new(client));
 
-        // Register client to receive dirty region notifications (libvncserver style)
+        // Register client to receive dirty region notifications (standard VNC protocol style)
         let regions_arc = client_arc.read().await.get_receiver_handle();
         let receiver = DirtyRegionReceiver::new(Arc::downgrade(&regions_arc));
         framebuffer.register_receiver(receiver).await;
@@ -527,7 +553,7 @@ impl VncServer {
 
                     let client_arc = Arc::new(RwLock::new(client));
 
-                    // Register client to receive dirty region notifications (libvncserver style)
+                    // Register client to receive dirty region notifications (standard VNC protocol style)
                     let regions_arc = client_arc.read().await.get_receiver_handle();
                     let receiver = DirtyRegionReceiver::new(Arc::downgrade(&regions_arc));
                     framebuffer.register_receiver(receiver).await;
@@ -688,10 +714,10 @@ impl VncServer {
         self.clients.try_write()
     }
 
-    /// Schedules a copy rectangle operation for all connected clients (libvncserver style).
+    /// Schedules a copy rectangle operation for all connected clients (standard VNC protocol style).
     ///
     /// This method iterates through all clients and schedules the specified region to be
-    /// sent using CopyRect encoding. This is the equivalent of libvncserver's
+    /// sent using CopyRect encoding. This is the equivalent of standard VNC protocol's
     /// `rfbScheduleCopyRect` function.
     ///
     /// # Arguments
@@ -703,7 +729,7 @@ impl VncServer {
     /// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
     /// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
     pub async fn schedule_copy_rect(&self, x: u16, y: u16, width: u16, height: u16, dx: i16, dy: i16) {
-        use crate::vnc::framebuffer::DirtyRegion;
+        use crate::framebuffer::DirtyRegion;
 
         let region = DirtyRegion::new(x, y, width, height);
 
@@ -713,7 +739,7 @@ impl VncServer {
             clients.clone()
         };
 
-        // Schedule copy for all clients (libvncserver: rfbGetClientIterator pattern)
+        // Schedule copy for all clients (standard VNC protocol: rfbGetClientIterator pattern)
         for client_arc in clients_snapshot.iter() {
             let client = client_arc.read().await;
             client.schedule_copy_region(region, dx, dy).await;
@@ -724,7 +750,7 @@ impl VncServer {
     ///
     /// This method first copies the specified region within the framebuffer memory,
     /// then schedules the copy operation to be sent to all connected clients.
-    /// This is the equivalent of libvncserver's `rfbDoCopyRect` function.
+    /// This is the equivalent of standard VNC protocol's `rfbDoCopyRect` function.
     ///
     /// # Arguments
     ///

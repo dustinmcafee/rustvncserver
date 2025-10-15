@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC authentication implementation.
 //!
 //! This module implements VNC Authentication (security type 2) as specified in RFC 6143 Section 7.2.2.
@@ -113,12 +128,16 @@ impl VncAuth {
         let mut encrypted = vec![0u8; 16];
 
         // First block
-        let mut block1 = des::cipher::Block::<Des>::clone_from_slice(&challenge[0..8]);
+        let mut block1_bytes = [0u8; 8];
+        block1_bytes.copy_from_slice(&challenge[0..8]);
+        let mut block1 = block1_bytes.into();
         cipher.encrypt_block(&mut block1);
         encrypted[0..8].copy_from_slice(&block1);
 
         // Second block
-        let mut block2 = des::cipher::Block::<Des>::clone_from_slice(&challenge[8..16]);
+        let mut block2_bytes = [0u8; 8];
+        block2_bytes.copy_from_slice(&challenge[8..16]);
+        let mut block2 = block2_bytes.into();
         cipher.encrypt_block(&mut block2);
         encrypted[8..16].copy_from_slice(&block2);
 

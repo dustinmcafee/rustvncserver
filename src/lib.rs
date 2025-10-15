@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! # rustvncserver
 //!
 //! A pure Rust implementation of a VNC (Virtual Network Computing) server.
@@ -5,7 +20,7 @@
 //! This library provides a complete VNC server implementation following the RFB
 //! (Remote Framebuffer) protocol specification (RFC 6143). It supports all major
 //! VNC encodings and pixel formats, with 100% wire-format compatibility with
-//! libvncserver.
+//! standard VNC protocol.
 //!
 //! ## Features
 //!
@@ -104,7 +119,8 @@ pub use error::{VncError, Result};
 pub use events::ServerEvent;
 pub use server::VncServer;
 pub use framebuffer::Framebuffer;
-pub use protocol::{PixelFormat, Encoding};
+pub use protocol::PixelFormat;
+pub use encoding::Encoding;
 
 #[cfg(feature = "turbojpeg")]
 pub use jpeg::TurboJpegEncoder;

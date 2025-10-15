@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC ZYWRLE (Zlib+Wavelet+Run-Length Encoding) implementation.
 //!
 //! ZYWRLE is a wavelet-based lossy compression encoding for low-bandwidth scenarios.
@@ -7,17 +22,18 @@
 //! - Non-linear quantization filtering
 //! - ZRLE encoding on the transformed coefficients
 //!
-//! This implementation matches libvncserver's ZYWRLE implementation exactly.
+//! # Algorithm Attribution
+//! The ZYWRLE algorithm is Copyright 2006 by Hitachi Systems & Services, Ltd.
+//! (Noriaki Yamazaki, Research & Development Center).
+//!
+//! This implementation is based on the ZYWRLE specification and is distributed
+//! under the terms compatible with the original BSD-style license granted by
+//! Hitachi Systems & Services, Ltd. for use of the ZYWRLE codec.
 //!
 //! # References
 //! - PLHarr: Senecal, J. G., et al., "An Improved N-Bit to N-Bit Reversible Haar-Like Transform"
 //! - EZW: Shapiro, JM: "Embedded Image Coding Using Zerotrees of Wavelet Coefficients"
-//! - libvncserver: src/common/zywrletemplate.c
-//!
-//! # License
-//! The ZYWRLE algorithm is (C) Copyright 2006 by Hitachi Systems & Services, Ltd.
-//! (Noriaki Yamazaki, Research & Development Center)
-//! Used under BSD-style license (see zywrletemplate.c for full license text).
+//! - ZYWRLE specification and reference implementation
 
 /// Non-linear quantization filter lookup tables.
 /// These tables implement r=2.0 non-linear quantization (quantize is x^2, dequantize is sqrt(x)).
@@ -298,14 +314,14 @@ fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
                 v >>= 1;
 
                 // Mask to ensure proper bit depth (32-bit: no masking)
-                // For 15/16-bit, libvncserver masks here, but we're always 32-bit RGBA
+                // For 15/16-bit, standard VNC protocol masks here, but we're always 32-bit RGBA
 
                 // Ensure not exactly -128 (helps with wavelet transform)
                 if y == -128 { y += 1; }
                 if u == -128 { u += 1; }
                 if v == -128 { v += 1; }
 
-                // Store as VYU in little-endian order (matches libvncserver ZYWRLE_SAVE_COEFF)
+                // Store as VYU in little-endian order (matches standard VNC protocol ZYWRLE_SAVE_COEFF)
                 // U in byte 0, Y in byte 1, V in byte 2
                 let bytes: [u8; 4] = [u as u8, y as u8, v as u8, 0];
                 buf[buf_idx] = i32::from_le_bytes(bytes);

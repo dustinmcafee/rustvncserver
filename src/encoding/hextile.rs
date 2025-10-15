@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC Hextile encoding implementation.
 //!
 //! Hextile divides the rectangle into 16x16 tiles and encodes each independently.
@@ -6,7 +21,7 @@
 use bytes::{BufMut, BytesMut};
 use super::Encoding;
 use super::common::{rgba_to_rgb24_pixels, extract_tile, analyze_tile_colors, find_subrects, put_pixel32};
-use crate::vnc::protocol::{HEXTILE_RAW, HEXTILE_BACKGROUND_SPECIFIED, HEXTILE_FOREGROUND_SPECIFIED, HEXTILE_ANY_SUBRECTS, HEXTILE_SUBRECTS_COLOURED};
+use crate::protocol::{HEXTILE_RAW, HEXTILE_BACKGROUND_SPECIFIED, HEXTILE_FOREGROUND_SPECIFIED, HEXTILE_ANY_SUBRECTS, HEXTILE_SUBRECTS_COLOURED};
 
 /// Implements the VNC "Hextile" encoding.
 ///

@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! VNC Zlib encoding implementation.
 //!
 //! Simple zlib compression on raw pixel data using the client's pixel format.
@@ -9,7 +24,7 @@ use std::io;
 /// Encodes pixel data using Zlib with a persistent compressor (RFC 6143 compliant).
 ///
 /// This maintains compression state across rectangles as required by RFC 6143.
-/// The implementation matches libvncserver's approach: single deflate() call per rectangle.
+/// The implementation matches standard VNC protocol's approach: single deflate() call per rectangle.
 ///
 /// # Arguments
 /// * `data` - RGBA pixel data (4 bytes per pixel)

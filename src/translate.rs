@@ -1,8 +1,23 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! Pixel format translation between server and client formats.
 //!
 //! This module provides pixel format conversion to support VNC clients with different
 //! color depths and pixel layouts. It implements the translation logic similar to
-//! libvncserver's translate.c but using direct runtime conversion instead of lookup tables.
+//! standard VNC protocol's translate.c but using direct runtime conversion instead of lookup tables.
 //!
 //! # Supported Formats
 //!
@@ -12,11 +27,11 @@
 //!
 //! # Performance
 //!
-//! While libvncserver uses precomputed lookup tables for performance, modern Rust's
+//! While standard VNC protocol uses precomputed lookup tables for performance, modern Rust's
 //! optimizer can generate very efficient code for direct pixel translation. This approach
 //! trades a small amount of CPU for significantly simpler code and lower memory usage.
 
-use crate::vnc::protocol::PixelFormat;
+use crate::protocol::PixelFormat;
 use bytes::BytesMut;
 
 /// Translates pixel data from server format (RGBA32) to client's requested format.

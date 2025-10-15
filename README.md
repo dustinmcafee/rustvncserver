@@ -2,7 +2,7 @@
 
 A pure Rust VNC (Virtual Network Computing) server library with complete RFB protocol support.
 
-[![License: GPL-2.0](https://img.shields.io/badge/License-GPL%202.0-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Rust](https://img.shields.io/badge/rust-1.76%2B-orange.svg)](https://www.rust-lang.org/)
 
 ## Features
@@ -15,7 +15,7 @@ A pure Rust VNC (Virtual Network Computing) server library with complete RFB pro
 - ✅ **Reverse Connections** - Connect to listening viewers
 - ✅ **Repeater Support** - UltraVNC Mode-2 repeaters
 
-### Encodings (100% libvncserver Parity)
+### Supported Encodings
 
 | Encoding | ID | Description | Wire Format Match |
 |----------|----|----|-------------------|
@@ -259,9 +259,9 @@ pub enum ServerEvent {
 - ✅ Windows (x86_64)
 - ✅ Android (via JNI wrapper - see [RustVNC](https://github.com/yourusername/RustVNC))
 
-## libvncserver Comparison
+## Why Rust?
 
-This library achieves **100% wire-format compatibility** with libvncserver while providing:
+This pure Rust implementation provides several advantages over traditional C implementations:
 
 **Advantages:**
 - ✅ Memory safety (no buffer overflows, use-after-free)
@@ -306,19 +306,23 @@ Contributions are welcome! Please:
 
 ## License
 
-GPL-2.0 - Same as droidVNC-NG and libvncserver
+Apache-2.0 - See [LICENSE](LICENSE) file for details.
+
+This library implements the VNC protocol as specified in RFC 6143, which is a public specification.
+The ZYWRLE algorithm is used under a BSD-style license from Hitachi Systems & Services, Ltd.
+All Rust dependencies use MIT or dual MIT/Apache-2.0 licenses.
 
 ## Credits
 
 - **Author**: Dustin McAfee
-- **Based on**: libvncserver (C implementation)
+- **Protocol**: Implements RFC 6143 (RFB Protocol Specification)
 - **Used in**: [RustVNC](https://github.com/dustinmcafee/RustVNC) - VNC server for Android
 
 ## See Also
 
 - [RFC 6143](https://datatracker.ietf.org/doc/html/rfc6143) - RFB Protocol Specification
-- [libvncserver](https://libvnc.github.io/) - Original C implementation
 - [TECHNICAL.md](TECHNICAL.md) - Detailed technical documentation
+- [NOTICE](NOTICE) - Third-party licenses and attributions
 
 ---
 

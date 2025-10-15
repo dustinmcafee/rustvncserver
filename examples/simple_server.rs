@@ -1,3 +1,18 @@
+// Copyright 2025 Dustin McAfee
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+
 //! Simple VNC server example.
 //!
 //! This example creates a VNC server with a static test pattern.
@@ -20,10 +35,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Password: test123");
 
     // Create server with 800x600 resolution
-    let server = VncServer::new(800, 600);
-
-    // Set password
-    server.set_password(Some("test123".to_string()));
+    let (server, _events) = VncServer::new(
+        800,
+        600,
+        "RustVNC Example".to_string(),
+        Some("test123".to_string())
+    );
 
     // Create a test pattern (gradient)
     let mut pixels = vec![0u8; 800 * 600 * 4]; // RGBA32
@@ -38,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Update framebuffer with test pattern
-    server.update_framebuffer(&pixels, 0, 0, 800, 600);
+    server.framebuffer().update_cropped(&pixels, 0, 0, 800, 600).await.expect("Failed to update framebuffer");
 
     println!("Framebuffer updated with test pattern");
     println!("Server ready for connections");
