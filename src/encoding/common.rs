@@ -193,6 +193,16 @@ pub fn put_pixel32(buf: &mut BytesMut, pixel: u32) {
     buf.put_u32_le(pixel);  // Write full 32-bit pixel in little-endian format
 }
 
+/// Write a 24-bit pixel value to buffer in RGB24 format (3 bytes).
+/// Pixel format: R at bits 0-7, G at bits 8-15, B at bits 16-23
+/// This matches libvncserver's Pack24() function for tightUsePixelFormat24.
+/// Writes [R, G, B] in that order (3 bytes total).
+pub fn put_pixel24(buf: &mut BytesMut, pixel: u32) {
+    buf.put_u8((pixel & 0xFF) as u8);        // R
+    buf.put_u8(((pixel >> 8) & 0xFF) as u8); // G
+    buf.put_u8(((pixel >> 16) & 0xFF) as u8); // B
+}
+
 /// Check if all pixels are the same color.
 pub fn check_solid_color(pixels: &[u32]) -> Option<u32> {
     if pixels.is_empty() {

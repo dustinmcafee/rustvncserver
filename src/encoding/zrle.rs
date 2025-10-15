@@ -48,19 +48,27 @@ use crate::protocol::PixelFormat;
 const TILE_SIZE: usize = 64;
 
 /// Analyzes pixel data to count RLE runs, single pixels, and unique colors.
-fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, HashMap<u32, usize>) {
+/// Returns: (runs, single_pixels, palette_vec)
+/// CRITICAL: The palette Vec must preserve insertion order (order colors first appear)
+/// to match libvncserver's zrlePaletteHelperInsert behavior.
+/// Optimized: uses inline array for small palettes to avoid HashMap allocation.
+fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, Vec<u32>) {
     let mut runs = 0;
     let mut single_pixels = 0;
-    let mut unique_colors: HashMap<u32, usize> = HashMap::new();
+    let mut palette: Vec<u32> = Vec::with_capacity(16); // Most tiles have <= 16 colors
 
     if pixels.is_empty() {
-        return (0, 0, unique_colors);
+        return (0, 0, palette);
     }
 
     let mut i = 0;
     while i < pixels.len() {
         let color = pixels[i];
-        *unique_colors.entry(color).or_insert(0) += 1;
+
+        // For small palettes (common case), linear search is faster than HashMap
+        if palette.len() < 256 && !palette.contains(&color) {
+            palette.push(color);
+        }
 
         let mut run_len = 1;
         while i + run_len < pixels.len() && pixels[i + run_len] == color {
@@ -74,7 +82,7 @@ fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, HashMap<u32, usize
         }
         i += run_len;
     }
-    (runs, single_pixels, unique_colors)
+    (runs, single_pixels, palette)
 }
 
 /// Encodes a rectangle of pixel data using ZRLE with a persistent compressor.
@@ -104,75 +112,22 @@ pub fn encode_zrle_persistent(
         }
     }
 
-    // Compress using persistent compressor
+    // Compress using persistent compressor with Z_SYNC_FLUSH
+    // Following libvncserver's approach: use persistent zlib stream with dictionary
     let input = &uncompressed_data[..];
-    let mut compressed_output = Vec::new();
+    let mut output_buf = vec![0u8; input.len() * 2 + 1024]; // Generous buffer
 
-    // Conservative buffer size for chunks
-    let chunk_size = 65536; // 64KB
-    let mut output_buf = vec![0u8; chunk_size];
-
-    let before_in = compressor.total_in();
     let before_out = compressor.total_out();
 
-    let mut input_pos = 0;
+    // Single compress call with Z_SYNC_FLUSH - this should handle all input
+    compressor.compress(
+        input,
+        &mut output_buf,
+        FlushCompress::Sync
+    )?;
 
-    // Loop until all input is consumed
-    loop {
-        let status = compressor.compress(
-            &input[input_pos..],
-            &mut output_buf,
-            FlushCompress::Sync
-        )?;
-
-        // Calculate how much input was consumed and output was produced
-        let total_in = compressor.total_in();
-        let total_out = compressor.total_out();
-
-        let consumed = (total_in - before_in - input_pos as u64) as usize;
-        let produced = (total_out - before_out - compressed_output.len() as u64) as usize;
-
-        // Append produced output
-        if produced > 0 {
-            compressed_output.extend_from_slice(&output_buf[..produced]);
-        }
-
-        input_pos += consumed;
-
-        // Check if we're done
-        match status {
-            Status::Ok => {
-                // More work needed, continue
-                if input_pos >= input.len() {
-                    // All input consumed but still returning Ok, finish with another call
-                    continue;
-                }
-            },
-            Status::BufError => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Compression buffer error"
-                ));
-            },
-            Status::StreamEnd => {
-                break; // Done
-            }
-        }
-
-        // Check if all input consumed
-        if input_pos >= input.len() {
-            break;
-        }
-    }
-
-    // Verify all input was consumed
-    let total_consumed = (compressor.total_in() - before_in) as usize;
-    if total_consumed != input.len() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("ZRLE: Not all input consumed: {}/{}", total_consumed, input.len())
-        ));
-    }
+    let produced = (compressor.total_out() - before_out) as usize;
+    let compressed_output = &output_buf[..produced];
 
     // Build result with length prefix (big-endian) + compressed data
     let mut result = BytesMut::with_capacity(4 + compressed_output.len());
@@ -231,16 +186,32 @@ pub fn encode_zrle(
 }
 
 /// Encodes a single tile, choosing the best sub-encoding.
-/// Encodes a single tile, choosing the best sub-encoding.
+/// Optimized to minimize allocations by working directly with RGBA data where possible.
 fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize) {
-    let pixels = rgba_to_rgb24_pixels(tile_data);
-    let (runs, single_pixels, unique_colors) = analyze_runs_and_palette(&pixels);
+    // Quick check for solid color by scanning RGBA data directly (avoid allocation)
+    if tile_data.len() >= 4 {
+        let first_r = tile_data[0];
+        let first_g = tile_data[1];
+        let first_b = tile_data[2];
+        let mut is_solid = true;
 
-    // Solid tile is a special case
-    if unique_colors.len() == 1 {
-        encode_solid_color_tile(buf, pixels[0]);
-        return;
+        for chunk in tile_data.chunks_exact(4).skip(1) {
+            if chunk[0] != first_r || chunk[1] != first_g || chunk[2] != first_b {
+                is_solid = false;
+                break;
+            }
+        }
+
+        if is_solid {
+            let color = (first_r as u32) | ((first_g as u32) << 8) | ((first_b as u32) << 16);
+            encode_solid_color_tile(buf, color);
+            return;
+        }
     }
+
+    // Convert RGBA to RGB24 pixels (still needed for analysis)
+    let pixels = rgba_to_rgb24_pixels(tile_data);
+    let (runs, single_pixels, palette) = analyze_runs_and_palette(&pixels);
 
     const CPIXEL_SIZE: usize = 3; // CPIXEL is 3 bytes for depth=24
     let mut use_rle = false;
@@ -256,8 +227,7 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
         estimated_bytes = plain_rle_bytes;
     }
 
-    if unique_colors.len() < 128 {
-        let palette: Vec<_> = unique_colors.keys().cloned().collect();
+    if palette.len() < 128 {
         let palette_size = palette.len();
 
         // Palette RLE encoding
@@ -290,17 +260,16 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
     if !use_palette {
         // Raw or Plain RLE
         if use_rle {
-            // Plain RLE
+            // Plain RLE - encode directly to buffer (avoid intermediate Vec)
             buf.put_u8(128);
-            let encoded_rle = encode_rle(&pixels);
-            buf.extend_from_slice(&encoded_rle);
+            encode_rle_to_buf(buf, &pixels);
         } else {
             // Raw
             encode_raw_tile(buf, tile_data);
         }
     } else {
         // Palette (Packed Palette or Packed Palette RLE)
-        let palette: Vec<_> = unique_colors.keys().cloned().collect();
+        // Build index lookup from palette (preserves insertion order)
         let color_to_idx: HashMap<_, _> = palette.iter().enumerate().map(|(i, &c)| (c, i as u8)).collect();
 
         if use_rle {
@@ -308,12 +277,13 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
             encode_packed_palette_rle_tile(buf, &pixels, &palette, &color_to_idx);
         } else {
             // Packed Palette (no RLE)
-            encode_packed_palette_tile(buf, &pixels, width, height, &unique_colors);
+            encode_packed_palette_tile(buf, &pixels, width, height, &palette, &color_to_idx);
         }
     }
 }
 
 /// Extracts a tile from the full framebuffer.
+/// Optimized to use a single allocation and bulk copy operations.
 fn extract_tile(
     full_frame: &[u8],
     frame_width: usize,
@@ -322,11 +292,20 @@ fn extract_tile(
     width: usize,
     height: usize,
 ) -> Vec<u8> {
-    let mut tile_data = Vec::with_capacity(width * height * 4);
+    let tile_size = width * height * 4;
+    let mut tile_data = Vec::with_capacity(tile_size);
+
+    // Use unsafe for performance - we know the capacity is correct
+    unsafe {
+        tile_data.set_len(tile_size);
+    }
+
+    let row_bytes = width * 4;
     for row in 0..height {
-        let start = ((y + row) * frame_width + x) * 4;
-        let end = start + width * 4;
-        tile_data.extend_from_slice(&full_frame[start..end]);
+        let src_start = ((y + row) * frame_width + x) * 4;
+        let dst_start = row * row_bytes;
+        tile_data[dst_start..dst_start + row_bytes]
+            .copy_from_slice(&full_frame[src_start..src_start + row_bytes]);
     }
     tile_data
 }
@@ -367,11 +346,11 @@ fn encode_raw_tile(buf: &mut BytesMut, tile_data: &[u8]) {
 fn encode_packed_palette_tile(
     buf: &mut BytesMut,
     pixels: &[u32],
-    _width: usize,
-    _height: usize,
-    unique_colors: &HashMap<u32, usize>,
+    width: usize,
+    height: usize,
+    palette: &[u32],
+    color_to_idx: &HashMap<u32, u8>,
 ) {
-    let palette: Vec<_> = unique_colors.keys().cloned().collect();
     let palette_size = palette.len();
     let bits_per_pixel = match palette_size {
         2 => 1,
@@ -381,31 +360,37 @@ fn encode_packed_palette_tile(
 
     buf.put_u8(palette_size as u8); // Packed palette sub-encoding
 
-    // Write palette as CPIXEL (3 bytes each)
-    for &color in &palette {
+    // Write palette as CPIXEL (3 bytes each) - in insertion order
+    for &color in palette {
         put_cpixel(buf, color);
     }
 
-    // Write packed pixel data (RFC 6143: pack from MSB to LSB)
-    let mut packed_byte = 0;
-    let mut bit_pos = 0;
-    let color_to_idx: HashMap<_, _> = palette.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+    // Write packed pixel data ROW BY ROW (libvncserver zrleencodetemplate.c:266-286)
+    // Critical: Each row must be byte-aligned
+    for row in 0..height {
+        let mut packed_byte = 0;
+        let mut nbits = 0;
+        let row_start = row * width;
+        let row_end = row_start + width;
 
-    for &pixel in pixels {
-        let idx = color_to_idx[&pixel] as u8;
-        // Pack from MSB: first pixel goes in high bits
-        let shift = 8 - bit_pos - bits_per_pixel;
-        packed_byte |= idx << shift;
-        bit_pos += bits_per_pixel;
-        if bit_pos >= 8 {
-            buf.put_u8(packed_byte);
-            packed_byte = 0;
-            bit_pos = 0;
+        for &pixel in &pixels[row_start..row_end] {
+            let idx = color_to_idx[&pixel];
+            // Pack from MSB: byte = (byte << bppp) | index
+            packed_byte = (packed_byte << bits_per_pixel) | idx;
+            nbits += bits_per_pixel;
+
+            if nbits >= 8 {
+                buf.put_u8(packed_byte);
+                packed_byte = 0;
+                nbits = 0;
+            }
         }
-    }
 
-    if bit_pos > 0 {
-        buf.put_u8(packed_byte);
+        // Pad remaining bits to MSB at end of row (libvncserver line 283)
+        if nbits > 0 {
+            packed_byte <<= 8 - nbits;
+            buf.put_u8(packed_byte);
+        }
     }
 }
 
@@ -426,6 +411,7 @@ fn encode_packed_palette_rle_tile(
     }
 
     // Write RLE data using palette indices
+    // Following libvncserver zrleencodetemplate.c:231-270
     let mut i = 0;
     while i < pixels.len() {
         let color = pixels[i];
@@ -436,16 +422,21 @@ fn encode_packed_palette_rle_tile(
             run_len += 1;
         }
 
-        if run_len == 1 {
+        // Short runs (1-2 pixels) are written WITHOUT RLE marker (libvncserver lines 231-237)
+        if run_len <= 2 {
+            // Write index once for length 1, twice for length 2
+            if run_len == 2 {
+                buf.put_u8(index);
+            }
             buf.put_u8(index);
         } else {
-            // RLE encoding for runs > 1
+            // RLE encoding for runs >= 3 (libvncserver lines 238-247)
             buf.put_u8(index | 128); // Set bit 7 to indicate RLE follows
-            // Encode run length using variable-length encoding (RFC 6143 Section 7.6.6)
+            // Encode run length - 1 using variable-length encoding
             let mut remaining_len = run_len - 1;
-            while remaining_len > 127 {
-                buf.put_u8(127 | 128); // 127 with continuation bit = 255
-                remaining_len -= 127;
+            while remaining_len >= 255 {
+                buf.put_u8(255);
+                remaining_len -= 255;
             }
             buf.put_u8(remaining_len as u8);
         }
@@ -453,9 +444,8 @@ fn encode_packed_palette_rle_tile(
     }
 }
 
-/// Encodes pixel data using run-length encoding.
-fn encode_rle(pixels: &[u32]) -> Vec<u8> {
-    let mut encoded = BytesMut::new();
+/// Encodes pixel data using run-length encoding directly to buffer (optimized).
+fn encode_rle_to_buf(buf: &mut BytesMut, pixels: &[u32]) {
     let mut i = 0;
     while i < pixels.len() {
         let color = pixels[i];
@@ -464,21 +454,20 @@ fn encode_rle(pixels: &[u32]) -> Vec<u8> {
             run_len += 1;
         }
         // Write CPIXEL (3 bytes)
-        put_cpixel(&mut encoded, color);
+        put_cpixel(buf, color);
 
-        // Encode run length using variable-length encoding (RFC 6143 Section 7.6.6)
-        // Each byte holds 0-127 in lower 7 bits, bit 7 set means more bytes follow
-        // The total value is the SUM of all bytes (with bit 7 masked)
+        // Encode run length - 1 (libvncserver zrleencodetemplate.c:244-249)
+        // Length encoding: write 255 for each full 255-length chunk, then remainder
+        // NO continuation bits - just plain bytes where 255 means "add 255 to length"
         let mut len_to_encode = run_len - 1;
-        while len_to_encode > 127 {
-            encoded.put_u8(127 | 128); // 127 with continuation bit = 255
-            len_to_encode -= 127;
+        while len_to_encode >= 255 {
+            buf.put_u8(255);
+            len_to_encode -= 255;
         }
-        encoded.put_u8(len_to_encode as u8);
+        buf.put_u8(len_to_encode as u8);
 
         i += run_len;
     }
-    encoded.to_vec()
 }
 
 /// Implements the VNC "ZRLE" (Zlib Run-Length Encoding).

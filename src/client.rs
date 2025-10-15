@@ -217,6 +217,10 @@ pub struct VncClient {
     jpeg_quality: AtomicU8, // Atomic - simple u8 value accessed from multiple contexts
     /// The compression level for encodings (e.g., Zlib), stored as an `AtomicU8` for atomic access.
     compression_level: AtomicU8, // Atomic - simple u8 value accessed from multiple contexts
+    /// The VNC quality level (0-9, or 255 for unset = use JPEG).
+    /// Stored as an `AtomicU8` for atomic access from multiple contexts.
+    /// Matches libvncserver's cl->turboQualityLevel.
+    quality_level: AtomicU8, // Atomic - VNC quality level (0-9, 255=unset)
     /// A flag indicating whether the client has requested continuous framebuffer updates, stored as an `AtomicBool`.
     continuous_updates: AtomicBool, // Atomic - simple bool flag
     /// A shared, locked vector of `DirtyRegion`s specific to this client.
@@ -382,6 +386,7 @@ impl VncClient {
             last_update_sent: RwLock::new(creation_time),
             jpeg_quality: AtomicU8::new(80), // Default quality
             compression_level: AtomicU8::new(6), // Default zlib compression (balanced)
+            quality_level: AtomicU8::new(255), // 255 = unset (use JPEG by default)
             continuous_updates: AtomicBool::new(false),
             modified_regions: Arc::new(RwLock::new(Vec::new())),
             requested_region: RwLock::new(None),
@@ -558,6 +563,7 @@ impl VncClient {
                                         const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
                                         let quality = TIGHT2TURBO_QUAL[quality_level as usize];
                                         self.jpeg_quality.store(quality, Ordering::Relaxed);
+                                        self.quality_level.store(quality_level, Ordering::Relaxed); // Store VNC quality level
                                         info!("Client requested quality level {}, using JPEG quality {}", quality_level, quality);
                                     }
 
@@ -829,12 +835,13 @@ impl VncClient {
 
         // Choose best encoding supported by client
         let encodings = self.encodings.read().await;
-        // Priority order: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
+        // Priority order: TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
+        // TEMPORARILY DISABLED: TIGHT encoding (causing disconnects)
         // This matches standard VNC protocol's typical priority (Tight offers best compression/speed trade-off)
         // ZLIB, ZLIBHEX, ZRLE, and ZYWRLE all use persistent compression (RFC 6143 compliant)
-        let preferred_encoding = if encodings.contains(&ENCODING_TIGHT) {
+        let preferred_encoding = if false && encodings.contains(&ENCODING_TIGHT) {
             ENCODING_TIGHT
-        } else if encodings.contains(&ENCODING_TIGHTPNG) {
+        } else if false && encodings.contains(&ENCODING_TIGHTPNG) {
             ENCODING_TIGHTPNG
         } else if encodings.contains(&ENCODING_ZRLE) {
             ENCODING_ZRLE
@@ -877,6 +884,7 @@ impl VncClient {
         // Load quality/compression settings atomically
         let jpeg_quality = self.jpeg_quality.load(Ordering::Relaxed);
         let compression_level = self.compression_level.load(Ordering::Relaxed);
+        let quality_level = self.quality_level.load(Ordering::Relaxed);
 
         // STEP 1: Send copy regions FIRST (standard VNC protocol style)
         if let Some((dx, dy)) = copy_src_offset {
@@ -1120,11 +1128,12 @@ impl VncClient {
                 let mut tight_streams = self.tight_zlib_streams.write().await;
 
                 // Use encode_tight_with_streams which uses persistent compression streams
+                // Pass quality_level (0-9 or 255) for Tight encoding, not jpeg_quality
                 let encoded = encoding::tight::encode_tight_with_streams(
                     &pixel_data,
                     region.width,
                     region.height,
-                    jpeg_quality,
+                    quality_level, // Pass VNC quality level for Tight encoding
                     compression_level,
                     &mut *tight_streams,
                 );

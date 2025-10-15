@@ -33,7 +33,7 @@ use flate2::Compression;
 use std::io::Write;
 use std::collections::HashMap;
 use super::Encoding;
-use super::common::{rgba_to_rgb24_pixels, check_solid_color, build_palette, put_pixel32};
+use super::common::{rgba_to_rgb24_pixels, check_solid_color, build_palette, put_pixel24};
 
 // Tight encoding protocol constants (from standard VNC protocol rfbproto.h)
 const TIGHT_EXPLICIT_FILTER: u8 = 0x04;
@@ -110,11 +110,15 @@ impl Encoding for TightEncoding {
 }
 
 /// Encode as Tight solid fill (1 color).
-/// Wire format: [0x80] [R] [G] [B] [X]
+/// Wire format: [0x80] [R] [G] [B]
+/// Following libvncserver tight.c SendSolidRect (lines 768-791)
+/// NOTE: Uses Pack24 format (RGB24, 3 bytes) to match libvncserver's tightUsePixelFormat24 behavior
 fn encode_tight_solid(color: u32) -> BytesMut {
-    let mut buf = BytesMut::with_capacity(5);
+    let mut buf = BytesMut::with_capacity(4);
     buf.put_u8(TIGHT_FILL << 4); // 0x80: Fill compression (solid color)
-    put_pixel32(&mut buf, color); // 4 bytes for 32bpp
+    // Pack as RGB24 (3 bytes) - matches libvncserver's Pack24() when depth==24
+    put_pixel24(&mut buf, color);
+    log::info!("Tight: solid fill, color=0x{:08x}, output {} bytes", color, buf.len());
     buf
 }
 
@@ -181,9 +185,10 @@ fn encode_tight_indexed(pixels: &[u32], _width: u16, _height: u16, palette: &[u3
     // 3. Palette size minus 1 (0 = 1 color is invalid, but handled as solid fill)
     buf.put_u8((palette_size - 1) as u8);
 
-    // 4. Palette colors (each color is 4 bytes for 32bpp)
+    // 4. Palette colors (RGB24, 3 bytes each)
+    // Following libvncserver SendIndexedRect with Pack24 for depth==24
     for &color in palette {
-        put_pixel32(&mut buf, color);
+        put_pixel24(&mut buf, color);
     }
 
     // 5. Compressed data with compact length
@@ -236,9 +241,10 @@ fn encode_tight_mono(pixels: &[u32], width: u16, height: u16, palette: &[u32], c
     // 3. Palette size minus 1 (1 = 2 colors)
     buf.put_u8(1);
 
-    // 4. Palette: background then foreground (each 4 bytes for 32bpp)
-    put_pixel32(&mut buf, bg);
-    put_pixel32(&mut buf, fg);
+    // 4. Palette: background then foreground (RGB24, 3 bytes each)
+    // Following libvncserver SendMonoRect with Pack24 for depth==24
+    put_pixel24(&mut buf, bg);
+    put_pixel24(&mut buf, fg);
 
     // 5. Bitmap data (compressed or uncompressed)
     if let Some(comp_data) = compressed {
@@ -476,16 +482,27 @@ pub fn encode_tight_with_streams<C: TightStreamCompressor>(
         _ => {}
     }
 
-    // Method 3: Choose between full-color zlib and JPEG based on quality setting
-    // Following standard VNC protocol's logic: use JPEG for high quality photographic content,
-    // use full-color zlib for lossless compression or lower quality settings
-    if quality == 0 || quality >= 10 {
-        // Quality 0 = lossless preference, quality >= 10 = disable JPEG
-        // Use full-color zlib mode with persistent stream
+    // Method 3: Choose between JPEG and full-color zlib based on quality level
+    // Following libvncserver's logic (tight.c lines 705-715):
+    // - if turboQualityLevel == 255 (unset): use JPEG with default quality
+    // - if turboQualityLevel != 255: use JPEG with mapped quality
+    // Note: Full-color zlib is used when quality level >= 10 (disable JPEG)
+    if quality == 255 {
+        // Unset quality level: use JPEG with default quality (80)
+        log::info!("Tight: quality=255 (unset), using JPEG with quality 80");
+        encode_tight_jpeg(data, width, height, 80)
+    } else if quality >= 10 {
+        // Quality level >= 10: use full-color zlib (lossless), JPEG disabled
+        log::info!("Tight: quality={} (>=10), using full-color zlib", quality);
         encode_tight_full_color_persistent(data, width, height, compression, compressor)
     } else {
-        // Quality 1-9: Use JPEG for photographic content (powered by libjpeg-turbo)
-        encode_tight_jpeg(data, width, height, quality)
+        // Quality level 0-9: use JPEG with mapped quality
+        // Use libvncserver's quality mapping (TigerVNC compatible)
+        // Reference: libvncserver/src/libvncserver/rfbserver.c:109
+        const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
+        let jpeg_quality = TIGHT2TURBO_QUAL[quality as usize];
+        log::info!("Tight: quality={} (0-9), using JPEG with mapped quality {}", quality, jpeg_quality);
+        encode_tight_jpeg(data, width, height, jpeg_quality)
     }
 }
 
@@ -539,9 +556,10 @@ fn encode_tight_indexed_persistent<C: TightStreamCompressor>(
     // 3. Palette size minus 1
     buf.put_u8((palette_size - 1) as u8);
 
-    // 4. Palette colors (each color is 4 bytes for 32bpp)
+    // 4. Palette colors (RGB24, 3 bytes each)
+    // Following libvncserver SendIndexedRect with Pack24 for depth==24
     for &color in palette {
-        put_pixel32(&mut buf, color);
+        put_pixel24(&mut buf, color);
     }
 
     // 5. Compressed data with compact length
@@ -590,9 +608,10 @@ fn encode_tight_mono_persistent<C: TightStreamCompressor>(
     // 3. Palette size minus 1 (1 = 2 colors)
     buf.put_u8(1);
 
-    // 4. Palette: background then foreground (each 4 bytes for 32bpp)
-    put_pixel32(&mut buf, bg);
-    put_pixel32(&mut buf, fg);
+    // 4. Palette: background then foreground (RGB24, 3 bytes each)
+    // Following libvncserver SendMonoRect with Pack24 for depth==24
+    put_pixel24(&mut buf, bg);
+    put_pixel24(&mut buf, fg);
 
     // 5. Bitmap data (compressed or uncompressed)
     if let Some(comp_data) = compressed {
