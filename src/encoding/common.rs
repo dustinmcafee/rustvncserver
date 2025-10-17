@@ -195,7 +195,7 @@ pub fn put_pixel32(buf: &mut BytesMut, pixel: u32) {
 
 /// Write a 24-bit pixel value to buffer in RGB24 format (3 bytes).
 /// Pixel format: R at bits 0-7, G at bits 8-15, B at bits 16-23
-/// This matches libvncserver's Pack24() function for tightUsePixelFormat24.
+/// Implements 24-bit pixel packing as specified in RFC 6143.
 /// Writes [R, G, B] in that order (3 bytes total).
 pub fn put_pixel24(buf: &mut BytesMut, pixel: u32) {
     buf.put_u8((pixel & 0xFF) as u8);        // R

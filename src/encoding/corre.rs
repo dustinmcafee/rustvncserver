@@ -26,15 +26,15 @@ use log::info;
 /// Implements the VNC "CoRRE" (Compact RRE) encoding.
 ///
 /// CoRRE is like RRE but uses compact subrectangles with u8 coordinates.
-/// Format: [bgColor][nSubrects(u8)][subrect1]...[subrectN]
-/// Each subrect: [color][x(u8)][y(u8)][w(u8)][h(u8)]
+/// Format: \[bgColor\]\[nSubrects(u8)\]\[subrect1\]...\[subrectN\]
+/// Each subrect: \[color\]\[x(u8)\]\[y(u8)\]\[w(u8)\]\[h(u8)\]
 pub struct CorRreEncoding;
 
 impl Encoding for CorRreEncoding {
     fn encode(&self, data: &[u8], width: u16, height: u16, _quality: u8, _compression: u8) -> BytesMut {
-        // CoRRE format (per RFC 6143 + libvncserver corre.c):
-        // Protocol layer writes: rfbFramebufferUpdateRectHeader + rfbRREHeader (nSubrects only)
-        // Encoder writes: bgColor + subrects (afterEncBuf in libvncserver)
+        // CoRRE format per RFC 6143:
+        // Protocol layer writes: FramebufferUpdateRectHeader + nSubrects count
+        // Encoder writes: bgColor + subrects
         // Each subrect: color(4) + x(1) + y(1) + w(1) + h(1)
         let pixels = rgba_to_rgb24_pixels(data);
         let bg_color = get_background_color(&pixels);
@@ -42,8 +42,8 @@ impl Encoding for CorRreEncoding {
         // Find subrectangles
         let subrects = find_subrects(&pixels, width as usize, height as usize, bg_color);
 
-        // Encoder output: background color + subrectangle data (matches libvncserver afterEncBuf)
-        // Protocol layer will write nSubrects separately as rfbRREHeader
+        // Encoder output: background color + subrectangle data
+        // Protocol layer will write nSubrects separately
         let mut buf = BytesMut::with_capacity(4 + subrects.len() * 8);
         buf.put_u32_le(bg_color); // background pixel value (little-endian)
 

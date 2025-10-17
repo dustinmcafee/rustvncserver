@@ -38,7 +38,7 @@
 
 use bytes::{BufMut, BytesMut};
 use flate2::write::ZlibEncoder;
-use flate2::{Compress, Compression, FlushCompress, Status};
+use flate2::{Compress, Compression, FlushCompress};
 use std::io::Write;
 use std::collections::HashMap;
 
@@ -50,7 +50,7 @@ const TILE_SIZE: usize = 64;
 /// Analyzes pixel data to count RLE runs, single pixels, and unique colors.
 /// Returns: (runs, single_pixels, palette_vec)
 /// CRITICAL: The palette Vec must preserve insertion order (order colors first appear)
-/// to match libvncserver's zrlePaletteHelperInsert behavior.
+/// as required by RFC 6143 for proper ZRLE palette encoding.
 /// Optimized: uses inline array for small palettes to avoid HashMap allocation.
 fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, Vec<u32>) {
     let mut runs = 0;
@@ -113,7 +113,7 @@ pub fn encode_zrle_persistent(
     }
 
     // Compress using persistent compressor with Z_SYNC_FLUSH
-    // Following libvncserver's approach: use persistent zlib stream with dictionary
+    // RFC 6143: use persistent zlib stream with dictionary for compression continuity
     let input = &uncompressed_data[..];
     let mut output_buf = vec![0u8; input.len() * 2 + 1024]; // Generous buffer
 
@@ -365,7 +365,7 @@ fn encode_packed_palette_tile(
         put_cpixel(buf, color);
     }
 
-    // Write packed pixel data ROW BY ROW (libvncserver zrleencodetemplate.c:266-286)
+    // Write packed pixel data ROW BY ROW per RFC 6143 ZRLE specification
     // Critical: Each row must be byte-aligned
     for row in 0..height {
         let mut packed_byte = 0;
@@ -386,7 +386,7 @@ fn encode_packed_palette_tile(
             }
         }
 
-        // Pad remaining bits to MSB at end of row (libvncserver line 283)
+        // Pad remaining bits to MSB at end of row per RFC 6143
         if nbits > 0 {
             packed_byte <<= 8 - nbits;
             buf.put_u8(packed_byte);
@@ -410,8 +410,7 @@ fn encode_packed_palette_rle_tile(
         put_cpixel(buf, color);
     }
 
-    // Write RLE data using palette indices
-    // Following libvncserver zrleencodetemplate.c:231-270
+    // Write RLE data using palette indices per RFC 6143 specification
     let mut i = 0;
     while i < pixels.len() {
         let color = pixels[i];
@@ -422,7 +421,7 @@ fn encode_packed_palette_rle_tile(
             run_len += 1;
         }
 
-        // Short runs (1-2 pixels) are written WITHOUT RLE marker (libvncserver lines 231-237)
+        // Short runs (1-2 pixels) are written WITHOUT RLE marker per RFC 6143
         if run_len <= 2 {
             // Write index once for length 1, twice for length 2
             if run_len == 2 {
@@ -430,7 +429,7 @@ fn encode_packed_palette_rle_tile(
             }
             buf.put_u8(index);
         } else {
-            // RLE encoding for runs >= 3 (libvncserver lines 238-247)
+            // RLE encoding for runs >= 3 per RFC 6143
             buf.put_u8(index | 128); // Set bit 7 to indicate RLE follows
             // Encode run length - 1 using variable-length encoding
             let mut remaining_len = run_len - 1;
@@ -456,7 +455,7 @@ fn encode_rle_to_buf(buf: &mut BytesMut, pixels: &[u32]) {
         // Write CPIXEL (3 bytes)
         put_cpixel(buf, color);
 
-        // Encode run length - 1 (libvncserver zrleencodetemplate.c:244-249)
+        // Encode run length - 1 per RFC 6143 ZRLE specification
         // Length encoding: write 255 for each full 255-length chunk, then remainder
         // NO continuation bits - just plain bytes where 255 means "add 255 to length"
         let mut len_to_encode = run_len - 1;

@@ -25,8 +25,8 @@ use super::common::{rgba_to_rgb24_pixels, get_background_color, find_subrects};
 /// Implements the VNC "RRE" (Rise-and-Run-length Encoding).
 ///
 /// RRE encodes a rectangle as a background color plus a list of subrectangles
-/// with their own colors. Format: [nSubrects(u32)][bgColor][subrect1]...[subrectN]
-/// Each subrect: [color][x(u16)][y(u16)][w(u16)][h(u16)]
+/// with their own colors. Format: \[nSubrects(u32)\]\[bgColor\]\[subrect1\]...\[subrectN\]
+/// Each subrect: \[color\]\[x(u16)\]\[y(u16)\]\[w(u16)\]\[h(u16)\]
 pub struct RreEncoding;
 
 impl Encoding for RreEncoding {

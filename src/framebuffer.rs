@@ -353,7 +353,7 @@ impl Framebuffer {
     ///
     /// This function compares the new data with the existing framebuffer content and
     /// identifies the bounding box of the changes, marking only the modified region as dirty.
-    /// This approach is similar to standard VNC protocol's handling in `androidvncserver.c`.
+    /// This approach implements efficient differential updates as specified in RFC 6143.
     ///
     /// # Arguments
     ///

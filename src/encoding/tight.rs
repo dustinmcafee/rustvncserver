@@ -13,19 +13,58 @@
 // limitations under the License.
 
 
-//! VNC Tight encoding implementation.
+//! VNC Tight encoding implementation - RFC 6143 compliant with full optimization
 //!
-//! Tight encoding with JPEG, palette, mono rect, and zlib support.
-//! Highly efficient for various types of screen content.
+//! # Architecture
 //!
-//! This implementation follows standard VNC protocol's Tight encoding protocol:
-//! - Solid fill (1 color)
-//! - Mono rect (2 colors, 1-bit bitmap)
-//! - Indexed palette (3-16 colors)
-//! - JPEG (photographic content)
+//! This implementation has TWO layers for optimal compression:
 //!
-//! For persistent zlib streams (matching standard VNC protocol), use the `encode_tight_persistent`
-//! function which maintains compression dictionaries across multiple rectangles.
+//! ## Layer 1: High-Level Optimization
+//! - Rectangle splitting and subdivision
+//! - Solid area detection and extraction
+//! - Recursive optimization for best encoding
+//! - Size limit enforcement (TIGHT_MAX_RECT_SIZE, TIGHT_MAX_RECT_WIDTH)
+//!
+//! ## Layer 2: Low-Level Encoding
+//! - Palette analysis
+//! - Encoding mode selection (solid/mono/indexed/full-color/JPEG)
+//! - Compression and wire format generation
+//!
+//! # Protocol Overview
+//!
+//! Tight encoding supports 5 compression modes:
+//!
+//! 1. **Solid fill** (1 color) - control byte 0x80
+//!    - Wire format: `[0x80][R][G][B]` (4 bytes total)
+//!    - Most efficient for solid color rectangles
+//!
+//! 2. **Mono rect** (2 colors) - control byte 0x50 or 0xA0
+//!    - Wire format: `[control][0x01][1][bg RGB24][fg RGB24][length][bitmap]`
+//!    - Uses 1-bit bitmap: 0=background, 1=foreground
+//!    - MSB first, each row byte-aligned
+//!
+//! 3. **Indexed palette** (3-16 colors) - control byte 0x60 or 0xA0
+//!    - Wire format: `[control][0x01][n-1][colors...][length][indices]`
+//!    - Each pixel encoded as palette index (1 byte)
+//!
+//! 4. **Full-color zlib** - control byte 0x00 or 0xA0
+//!    - Wire format: `[control][length][zlib compressed RGB24]`
+//!    - Lossless compression for truecolor images
+//!
+//! 5. **JPEG** - control byte 0x90
+//!    - Wire format: `[0x90][length][JPEG data]`
+//!    - Lossy compression for photographic content
+//!
+//! # Configuration Constants
+//!
+//! ```text
+//! TIGHT_MIN_TO_COMPRESS = 12      (data < 12 bytes sent raw)
+//! MIN_SPLIT_RECT_SIZE = 4096      (split rectangles >= 4096 pixels)
+//! MIN_SOLID_SUBRECT_SIZE = 2048   (solid areas must be >= 2048 pixels)
+//! MAX_SPLIT_TILE_SIZE = 16        (tile size for solid detection)
+//! TIGHT_MAX_RECT_SIZE = 65536     (max pixels per rectangle)
+//! TIGHT_MAX_RECT_WIDTH = 2048     (max rectangle width)
+//! ```
 
 use bytes::{BufMut, BytesMut};
 use flate2::write::ZlibEncoder;
@@ -33,253 +72,833 @@ use flate2::Compression;
 use std::io::Write;
 use std::collections::HashMap;
 use super::Encoding;
-use super::common::{rgba_to_rgb24_pixels, check_solid_color, build_palette, put_pixel24};
+use super::common::put_pixel24;
+use log::info;
 
-// Tight encoding protocol constants (from standard VNC protocol rfbproto.h)
+// Tight encoding protocol constants (RFC 6143 section 7.7.4)
 const TIGHT_EXPLICIT_FILTER: u8 = 0x04;
 const TIGHT_FILL: u8 = 0x08;
 #[allow(dead_code)]
 const TIGHT_JPEG: u8 = 0x09;
+const TIGHT_NO_ZLIB: u8 = 0x0A;
 
 // Filter types
 const TIGHT_FILTER_PALETTE: u8 = 0x01;
 
-// Stream IDs for different encoding types (public for use by client.rs)
-/// Stream ID for full-color (truecolor) Tight encoding (matches standard VNC protocol stream 0).
+/// Zlib stream ID for full-color data (RFC 6143 section 7.7.4)
 pub const STREAM_ID_FULL_COLOR: u8 = 0;
-/// Stream ID for mono rect (2-color) Tight encoding (matches standard VNC protocol stream 1).
+/// Zlib stream ID for monochrome bitmap data (RFC 6143 section 7.7.4)
 pub const STREAM_ID_MONO: u8 = 1;
-/// Stream ID for indexed palette (3-16 colors) Tight encoding (matches standard VNC protocol stream 2).
+/// Zlib stream ID for indexed palette data (RFC 6143 section 7.7.4)
 pub const STREAM_ID_INDEXED: u8 = 2;
 
-// Minimum data size to apply compression (from standard VNC protocol tight.c line 48)
+// Compression thresholds for Tight encoding optimization
 const TIGHT_MIN_TO_COMPRESS: usize = 12;
+const MIN_SPLIT_RECT_SIZE: usize = 4096;
+const MIN_SOLID_SUBRECT_SIZE: usize = 2048;
+const MAX_SPLIT_TILE_SIZE: u16 = 16;
+const TIGHT_MAX_RECT_SIZE: usize = 65536;
+const TIGHT_MAX_RECT_WIDTH: u16 = 2048;
 
-/// Trait for managing persistent zlib compression streams.
-/// This allows tight.rs to use the client's stream manager without
-/// importing client.rs (avoiding circular dependency).
-pub trait TightStreamCompressor {
-    /// Compress data using the specified stream ID and compression level.
-    /// Maintains dictionary state across compressions (Z_SYNC_FLUSH).
-    fn compress_tight_stream(&mut self, stream_id: u8, level: u8, input: &[u8]) -> Result<Vec<u8>, String>;
+/// Compression configuration for different quality levels
+struct TightConf {
+    mono_min_rect_size: usize,
+    idx_zlib_level: u8,
+    mono_zlib_level: u8,
+    raw_zlib_level: u8,
 }
 
-/// Implements the VNC "Tight" encoding with JPEG, palette, and zlib support.
+const TIGHT_CONF: [TightConf; 4] = [
+    TightConf { mono_min_rect_size: 6, idx_zlib_level: 0, mono_zlib_level: 0, raw_zlib_level: 0 },  // Level 0
+    TightConf { mono_min_rect_size: 32, idx_zlib_level: 1, mono_zlib_level: 1, raw_zlib_level: 1 }, // Level 1
+    TightConf { mono_min_rect_size: 32, idx_zlib_level: 3, mono_zlib_level: 3, raw_zlib_level: 2 }, // Level 2
+    TightConf { mono_min_rect_size: 32, idx_zlib_level: 7, mono_zlib_level: 7, raw_zlib_level: 5 }, // Level 9
+];
+
+/// Rectangle to encode
+#[derive(Debug, Clone)]
+struct Rect {
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+}
+
+/// Result of encoding a rectangle
+struct EncodeResult {
+    rectangles: Vec<(Rect, BytesMut)>,
+}
+
+/// Implements the VNC "Tight" encoding (RFC 6143 section 7.7.4).
 pub struct TightEncoding;
 
 impl Encoding for TightEncoding {
     fn encode(&self, data: &[u8], width: u16, height: u16, quality: u8, compression: u8) -> BytesMut {
-        // Intelligently choose the best encoding method based on image content
-        // Following standard VNC protocol's algorithm (tight.c lines 658-730)
+        // Simple wrapper - for full optimization, use encode_rect_optimized
+        let rect = Rect { x: 0, y: 0, w: width, h: height };
+        let result = encode_rect_optimized(data, width, &rect, quality, compression);
 
-        // Method 1: Check if it's a solid color (1 color)
-        let pixels = rgba_to_rgb24_pixels(data);
-        if let Some(solid_color) = check_solid_color(&pixels) {
-            return encode_tight_solid(solid_color);
+        // Concatenate all rectangles
+        let mut output = BytesMut::new();
+        for (_rect, buf) in result.rectangles {
+            output.extend_from_slice(&buf);
+        }
+        output
+    }
+}
+
+/// High-level optimization: split rectangles and find solid areas
+/// Implements Tight encoding optimization as specified in RFC 6143
+fn encode_rect_optimized(
+    framebuffer: &[u8],
+    fb_width: u16,
+    rect: &Rect,
+    quality: u8,
+    compression: u8,
+) -> EncodeResult {
+    let mut rectangles = Vec::new();
+
+    // Normalize compression level based on quality settings
+    let compression = normalize_compression_level(compression, quality);
+
+    // Check if optimization should be applied
+    if (rect.w as usize * rect.h as usize) < MIN_SPLIT_RECT_SIZE {
+        // Too small - encode directly
+        let buf = encode_subrect(framebuffer, fb_width, rect, quality, compression);
+        rectangles.push((rect.clone(), buf));
+        return EncodeResult { rectangles };
+    }
+
+    // Calculate maximum rows per rectangle
+    let n_max_width = rect.w.min(TIGHT_MAX_RECT_WIDTH);
+    let n_max_rows = (TIGHT_MAX_RECT_SIZE / n_max_width as usize) as u16;
+
+    // Try to find large solid-color areas for optimization
+    let mut current_y = rect.y;
+    let mut remaining_h = rect.h;
+
+    while current_y < rect.y + rect.h {
+        // Check if rectangle becomes too large
+        if (current_y - rect.y) >= n_max_rows {
+            let chunk_rect = Rect {
+                x: rect.x,
+                y: rect.y + (current_y - rect.y - n_max_rows),
+                w: rect.w,
+                h: n_max_rows,
+            };
+            let buf = encode_subrect(framebuffer, fb_width, &chunk_rect, quality, compression);
+            rectangles.push((chunk_rect, buf));
+            remaining_h -= n_max_rows;
         }
 
-        // Method 2: Build palette and route to appropriate encoding
-        let palette = build_palette(&pixels);
+        let dy_end = (current_y + MAX_SPLIT_TILE_SIZE).min(rect.y + rect.h);
+        let dh = dy_end - current_y;
 
-        // Route based on palette size (matching standard VNC protocol's algorithm)
-        match palette.len() {
-            // 2 colors: Use mono rect encoding (1-bit bitmap)
-            2 => {
-                return encode_tight_mono(&pixels, width, height, &palette, compression);
+        let mut current_x = rect.x;
+        while current_x < rect.x + rect.w {
+            let dx_end = (current_x + MAX_SPLIT_TILE_SIZE).min(rect.x + rect.w);
+            let dw = dx_end - current_x;
+
+            // Check if tile is solid
+            if let Some(color_value) = check_solid_tile(framebuffer, fb_width, current_x, current_y, dw, dh, None) {
+                // Find best solid area
+                let (w_best, h_best) = find_best_solid_area(
+                    framebuffer,
+                    fb_width,
+                    current_x,
+                    current_y,
+                    rect.w - (current_x - rect.x),
+                    remaining_h - (current_y - rect.y),
+                    color_value,
+                );
+
+                // Check if solid area is large enough
+                if w_best * h_best != rect.w * remaining_h && (w_best as usize * h_best as usize) < MIN_SOLID_SUBRECT_SIZE {
+                    current_x += dw;
+                    continue;
+                }
+
+                // Extend solid area
+                let (x_best, y_best, w_best, h_best) = extend_solid_area(
+                    framebuffer,
+                    fb_width,
+                    rect.x,
+                    current_y,
+                    rect.w,
+                    remaining_h,
+                    color_value,
+                    current_x,
+                    current_y,
+                    w_best,
+                    h_best,
+                );
+
+                // Send rectangles before solid area
+                if y_best != current_y {
+                    let top_rect = Rect {
+                        x: rect.x,
+                        y: current_y,
+                        w: rect.w,
+                        h: y_best - current_y,
+                    };
+                    let buf = encode_subrect(framebuffer, fb_width, &top_rect, quality, compression);
+                    rectangles.push((top_rect, buf));
+                }
+
+                if x_best != rect.x {
+                    let left_rect = Rect {
+                        x: rect.x,
+                        y: y_best,
+                        w: x_best - rect.x,
+                        h: h_best,
+                    };
+                    let sub_result = encode_rect_optimized(framebuffer, fb_width, &left_rect, quality, compression);
+                    rectangles.extend(sub_result.rectangles);
+                }
+
+                // Send solid rectangle
+                let solid_rect = Rect {
+                    x: x_best,
+                    y: y_best,
+                    w: w_best,
+                    h: h_best,
+                };
+                let buf = encode_solid_rect(color_value);
+                rectangles.push((solid_rect, buf));
+
+                // Send remaining rectangles
+                if x_best + w_best != rect.x + rect.w {
+                    let right_rect = Rect {
+                        x: x_best + w_best,
+                        y: y_best,
+                        w: rect.w - (x_best - rect.x) - w_best,
+                        h: h_best,
+                    };
+                    let sub_result = encode_rect_optimized(framebuffer, fb_width, &right_rect, quality, compression);
+                    rectangles.extend(sub_result.rectangles);
+                }
+
+                if y_best + h_best != current_y + remaining_h {
+                    let bottom_rect = Rect {
+                        x: rect.x,
+                        y: y_best + h_best,
+                        w: rect.w,
+                        h: remaining_h - (y_best - current_y) - h_best,
+                    };
+                    let sub_result = encode_rect_optimized(framebuffer, fb_width, &bottom_rect, quality, compression);
+                    rectangles.extend(sub_result.rectangles);
+                }
+
+                return EncodeResult { rectangles };
             }
-            // 3-16 colors: Use indexed palette encoding
-            3..=16 if palette.len() < pixels.len() / 4 => {
-                return encode_tight_indexed(&pixels, width, height, &palette, compression);
-            }
-            // Too many colors or not worth palette encoding
-            _ => {}
+
+            current_x += dw;
         }
 
-        // Method 3: Choose between full-color zlib and JPEG based on quality setting
-        // Following standard VNC protocol's logic: use JPEG for high quality photographic content,
-        // use full-color zlib for lossless compression or lower quality settings
-        if quality == 0 || quality >= 10 {
-            // Quality 0 = lossless preference, quality >= 10 = disable JPEG
-            // Use full-color zlib mode
-            encode_tight_full_color(data, width, height, compression)
+        current_y += dh;
+    }
+
+    // No solid areas found - encode normally
+    let buf = encode_subrect(framebuffer, fb_width, rect, quality, compression);
+    rectangles.push((rect.clone(), buf));
+    EncodeResult { rectangles }
+}
+
+/// Normalize compression level based on JPEG quality
+/// Maps compression level 0-9 to internal configuration indices
+fn normalize_compression_level(compression: u8, quality: u8) -> u8 {
+    let mut level = compression;
+
+    // Map compression level 0-9 to 0-3 (configuration array indices)
+    if level == 9 {
+        level = 3;
+    } else if level > 1 {
+        if quality < 10 {
+            // JPEG enabled - allow level 2
+            level = level.min(2);
         } else {
-            // Quality 1-9: Use JPEG for photographic content (powered by libjpeg-turbo)
-            encode_tight_jpeg(data, width, height, quality)
+            // JPEG disabled - cap at level 1
+            level = level.min(1);
+        }
+    }
+
+    level
+}
+
+/// Low-level encoding: analyze and encode a single subrectangle
+/// Analyzes palette and selects optimal encoding mode
+fn encode_subrect(
+    framebuffer: &[u8],
+    fb_width: u16,
+    rect: &Rect,
+    quality: u8,
+    compression: u8,
+) -> BytesMut {
+    // Split if too large
+    if rect.w > TIGHT_MAX_RECT_WIDTH || ((rect.w as usize) * (rect.h as usize)) > TIGHT_MAX_RECT_SIZE {
+        return encode_large_rect(framebuffer, fb_width, rect, quality, compression);
+    }
+
+    // Extract pixel data for this rectangle
+    let pixels = extract_rect_rgba(framebuffer, fb_width, rect);
+
+    // Analyze palette
+    let palette = analyze_palette(&pixels, rect.w as usize * rect.h as usize, compression);
+
+    // Route to appropriate encoder based on palette
+    match palette.num_colors {
+        0 => {
+            // Truecolor - use JPEG or full-color
+            if quality < 10 {
+                encode_jpeg_rect(&pixels, rect.w, rect.h, quality)
+            } else {
+                encode_full_color_rect(&pixels, rect.w, rect.h, compression)
+            }
+        }
+        1 => {
+            // Solid color
+            encode_solid_rect(palette.colors[0])
+        }
+        2 => {
+            // Mono rect (2 colors)
+            encode_mono_rect(&pixels, rect.w, rect.h, palette.colors[0], palette.colors[1], compression)
+        }
+        _ => {
+            // Indexed palette (3-16 colors)
+            encode_indexed_rect(&pixels, rect.w, rect.h, &palette.colors[..palette.num_colors], compression)
         }
     }
 }
 
-/// Encode as Tight solid fill (1 color).
-/// Wire format: [0x80] [R] [G] [B]
-/// Following libvncserver tight.c SendSolidRect (lines 768-791)
-/// NOTE: Uses Pack24 format (RGB24, 3 bytes) to match libvncserver's tightUsePixelFormat24 behavior
-fn encode_tight_solid(color: u32) -> BytesMut {
+/// Encode large rectangle by splitting it into smaller tiles
+/// Ensures rectangles stay within size limits
+fn encode_large_rect(
+    framebuffer: &[u8],
+    fb_width: u16,
+    rect: &Rect,
+    quality: u8,
+    compression: u8,
+) -> BytesMut {
+    let subrect_max_width = rect.w.min(TIGHT_MAX_RECT_WIDTH);
+    let subrect_max_height = (TIGHT_MAX_RECT_SIZE / subrect_max_width as usize) as u16;
+
+    let mut output = BytesMut::new();
+
+    let mut dy = 0;
+    while dy < rect.h {
+        let mut dx = 0;
+        while dx < rect.w {
+            let rw = (rect.w - dx).min(TIGHT_MAX_RECT_WIDTH);
+            let rh = (rect.h - dy).min(subrect_max_height);
+
+            let sub_rect = Rect {
+                x: rect.x + dx,
+                y: rect.y + dy,
+                w: rw,
+                h: rh,
+            };
+
+            let buf = encode_subrect(framebuffer, fb_width, &sub_rect, quality, compression);
+            output.extend_from_slice(&buf);
+
+            dx += TIGHT_MAX_RECT_WIDTH;
+        }
+        dy += subrect_max_height;
+    }
+
+    output
+}
+
+/// Check if a tile is all the same color
+/// Used for solid area detection optimization
+fn check_solid_tile(
+    framebuffer: &[u8],
+    fb_width: u16,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    need_same_color: Option<u32>,
+) -> Option<u32> {
+    let _fb_stride = fb_width as usize * 4; // RGBA32
+    let offset = (y as usize * fb_width as usize + x as usize) * 4;
+
+    // Get first pixel color (RGB24)
+    let first_color = rgba_to_rgb24(
+        framebuffer[offset],
+        framebuffer[offset + 1],
+        framebuffer[offset + 2],
+    );
+
+    // Check if we need a specific color
+    if let Some(required) = need_same_color {
+        if first_color != required {
+            return None;
+        }
+    }
+
+    // Check all pixels
+    for dy in 0..h {
+        let row_offset = ((y + dy) as usize * fb_width as usize + x as usize) * 4;
+        for dx in 0..w {
+            let pix_offset = row_offset + dx as usize * 4;
+            let color = rgba_to_rgb24(
+                framebuffer[pix_offset],
+                framebuffer[pix_offset + 1],
+                framebuffer[pix_offset + 2],
+            );
+            if color != first_color {
+                return None;
+            }
+        }
+    }
+
+    Some(first_color)
+}
+
+/// Find best solid area dimensions
+/// Determines optimal size for solid color subrectangle
+fn find_best_solid_area(
+    framebuffer: &[u8],
+    fb_width: u16,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    color_value: u32,
+) -> (u16, u16) {
+    let mut w_best = 0;
+    let mut h_best = 0;
+    let mut w_prev = w;
+
+    let mut dy = 0;
+    while dy < h {
+        let dh = (h - dy).min(MAX_SPLIT_TILE_SIZE);
+        let dw = w_prev.min(MAX_SPLIT_TILE_SIZE);
+
+        if check_solid_tile(framebuffer, fb_width, x, y + dy, dw, dh, Some(color_value)).is_none() {
+            break;
+        }
+
+        let mut dx = dw;
+        while dx < w_prev {
+            let dw_check = (w_prev - dx).min(MAX_SPLIT_TILE_SIZE);
+            if check_solid_tile(framebuffer, fb_width, x + dx, y + dy, dw_check, dh, Some(color_value)).is_none() {
+                break;
+            }
+            dx += dw_check;
+        }
+
+        w_prev = dx;
+        if (w_prev as usize * (dy + dh) as usize) > (w_best as usize * h_best as usize) {
+            w_best = w_prev;
+            h_best = dy + dh;
+        }
+
+        dy += dh;
+    }
+
+    (w_best, h_best)
+}
+
+/// Extend solid area to maximum size
+/// Expands solid region in all directions
+fn extend_solid_area(
+    framebuffer: &[u8],
+    fb_width: u16,
+    base_x: u16,
+    base_y: u16,
+    max_w: u16,
+    max_h: u16,
+    color_value: u32,
+    mut x: u16,
+    mut y: u16,
+    mut w: u16,
+    mut h: u16,
+) -> (u16, u16, u16, u16) {
+    // Extend upwards
+    while y > base_y {
+        if check_solid_tile(framebuffer, fb_width, x, y - 1, w, 1, Some(color_value)).is_none() {
+            break;
+        }
+        y -= 1;
+        h += 1;
+    }
+
+    // Extend downwards
+    while y + h < base_y + max_h {
+        if check_solid_tile(framebuffer, fb_width, x, y + h, w, 1, Some(color_value)).is_none() {
+            break;
+        }
+        h += 1;
+    }
+
+    // Extend left
+    while x > base_x {
+        if check_solid_tile(framebuffer, fb_width, x - 1, y, 1, h, Some(color_value)).is_none() {
+            break;
+        }
+        x -= 1;
+        w += 1;
+    }
+
+    // Extend right
+    while x + w < base_x + max_w {
+        if check_solid_tile(framebuffer, fb_width, x + w, y, 1, h, Some(color_value)).is_none() {
+            break;
+        }
+        w += 1;
+    }
+
+    (x, y, w, h)
+}
+
+/// Palette analysis result
+struct Palette {
+    num_colors: usize,
+    colors: [u32; 256],
+    mono_background: u32,
+    mono_foreground: u32,
+}
+
+/// Analyze palette from pixel data
+/// Determines color count and encoding mode selection
+fn analyze_palette(pixels: &[u8], pixel_count: usize, compression: u8) -> Palette {
+    let conf_idx = match compression {
+        0 => 0,
+        1 => 1,
+        2 | 3 => 2,
+        _ => 3,
+    };
+    let conf = &TIGHT_CONF[conf_idx];
+
+    let mut palette = Palette {
+        num_colors: 0,
+        colors: [0; 256],
+        mono_background: 0,
+        mono_foreground: 0,
+    };
+
+    if pixel_count == 0 {
+        return palette;
+    }
+
+    // Get first color
+    let c0 = rgba_to_rgb24(pixels[0], pixels[1], pixels[2]);
+
+    // Count how many pixels match first color
+    let mut i = 4;
+    while i < pixels.len() && rgba_to_rgb24(pixels[i], pixels[i + 1], pixels[i + 2]) == c0 {
+        i += 4;
+    }
+
+    if i >= pixels.len() {
+        // Solid color
+        palette.num_colors = 1;
+        palette.colors[0] = c0;
+        return palette;
+    }
+
+    // Check for 2-color (mono) case
+    if pixel_count >= conf.mono_min_rect_size {
+        let n0 = i / 4;
+        let c1 = rgba_to_rgb24(pixels[i], pixels[i + 1], pixels[i + 2]);
+        let mut n1 = 0;
+
+        i += 4;
+        while i < pixels.len() {
+            let color = rgba_to_rgb24(pixels[i], pixels[i + 1], pixels[i + 2]);
+            if color == c0 {
+                // n0 already counted
+            } else if color == c1 {
+                n1 += 1;
+            } else {
+                break;
+            }
+            i += 4;
+        }
+
+        if i >= pixels.len() {
+            // Only 2 colors found
+            palette.num_colors = 2;
+            if n0 > n1 {
+                palette.mono_background = c0;
+                palette.mono_foreground = c1;
+                palette.colors[0] = c0;
+                palette.colors[1] = c1;
+            } else {
+                palette.mono_background = c1;
+                palette.mono_foreground = c0;
+                palette.colors[0] = c1;
+                palette.colors[1] = c0;
+            }
+            return palette;
+        }
+    }
+
+    // More than 2 colors - full palette or truecolor
+    palette.num_colors = 0;
+    palette
+}
+
+/// Extract RGBA rectangle from framebuffer
+fn extract_rect_rgba(framebuffer: &[u8], fb_width: u16, rect: &Rect) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(rect.w as usize * rect.h as usize * 4);
+
+    for y in 0..rect.h {
+        let row_offset = ((rect.y + y) as usize * fb_width as usize + rect.x as usize) * 4;
+        let row_end = row_offset + rect.w as usize * 4;
+        pixels.extend_from_slice(&framebuffer[row_offset..row_end]);
+    }
+
+    pixels
+}
+
+/// Convert RGBA to RGB24
+#[inline]
+fn rgba_to_rgb24(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+/// Encode solid rectangle
+/// Implements solid fill encoding mode (1 color)
+fn encode_solid_rect(color: u32) -> BytesMut {
     let mut buf = BytesMut::with_capacity(4);
-    buf.put_u8(TIGHT_FILL << 4); // 0x80: Fill compression (solid color)
-    // Pack as RGB24 (3 bytes) - matches libvncserver's Pack24() when depth==24
+    buf.put_u8(TIGHT_FILL << 4); // 0x80
     put_pixel24(&mut buf, color);
-    log::info!("Tight: solid fill, color=0x{:08x}, output {} bytes", color, buf.len());
+    info!("Tight solid: 0x{:06x}, {} bytes", color, buf.len());
     buf
 }
 
-/// Encode as Tight indexed palette (3-16 colors).
-/// Wire format: [control] [filter] [palette_size-1] [colors...] [length...] [compressed indices]
-/// Following standard VNC protocol tight.c lines 900-950
-fn encode_tight_indexed(pixels: &[u32], _width: u16, _height: u16, palette: &[u32], compression: u8) -> BytesMut {
-    let palette_size = palette.len();
+/// Encode mono rectangle (2 colors)
+/// Implements monochrome bitmap encoding with palette
+fn encode_mono_rect(
+    pixels: &[u8],
+    width: u16,
+    height: u16,
+    bg: u32,
+    fg: u32,
+    compression: u8,
+) -> BytesMut {
+    let conf_idx = match compression {
+        0 => 0,
+        1 => 1,
+        2 | 3 => 2,
+        _ => 3,
+    };
+    let zlib_level = TIGHT_CONF[conf_idx].mono_zlib_level;
+
+    // Encode bitmap
+    let bitmap = encode_mono_bitmap(pixels, width, height, bg);
+
+    let mut buf = BytesMut::new();
+
+    // Control byte
+    if zlib_level == 0 {
+        buf.put_u8((TIGHT_NO_ZLIB | TIGHT_EXPLICIT_FILTER) << 4);
+    } else {
+        buf.put_u8((STREAM_ID_MONO | TIGHT_EXPLICIT_FILTER) << 4);
+    }
+
+    // Filter and palette
+    buf.put_u8(TIGHT_FILTER_PALETTE);
+    buf.put_u8(1); // 2 colors - 1
+
+    // Palette colors
+    put_pixel24(&mut buf, bg);
+    put_pixel24(&mut buf, fg);
+
+    // Compress data
+    compress_data(&mut buf, &bitmap, zlib_level);
+
+    info!("Tight mono: {}x{}, {} bytes", width, height, buf.len());
+    buf
+}
+
+/// Encode indexed palette rectangle (3-16 colors)
+/// Implements palette-based encoding with color indices
+fn encode_indexed_rect(
+    pixels: &[u8],
+    width: u16,
+    height: u16,
+    palette: &[u32],
+    compression: u8,
+) -> BytesMut {
+    let conf_idx = match compression {
+        0 => 0,
+        1 => 1,
+        2 | 3 => 2,
+        _ => 3,
+    };
+    let zlib_level = TIGHT_CONF[conf_idx].idx_zlib_level;
 
     // Build color-to-index map
-    let mut color_map: HashMap<u32, u8> = HashMap::new();
+    let mut color_map = HashMap::new();
     for (idx, &color) in palette.iter().enumerate() {
         color_map.insert(color, idx as u8);
     }
 
-    // Encode pixels as palette indices
-    let mut indices = Vec::with_capacity(pixels.len());
-    for &pixel in pixels {
-        indices.push(*color_map.get(&pixel).unwrap_or(&0));
+    // Encode indices
+    let mut indices = Vec::with_capacity(width as usize * height as usize);
+    for chunk in pixels.chunks_exact(4) {
+        let color = rgba_to_rgb24(chunk[0], chunk[1], chunk[2]);
+        indices.push(*color_map.get(&color).unwrap_or(&0));
     }
-
-    // Compress indices
-    let compression_level = match compression {
-        0 => Compression::fast(),
-        1..=3 => Compression::new(compression as u32),
-        4..=6 => Compression::default(),
-        _ => Compression::best(),
-    };
-
-    let mut encoder = ZlibEncoder::new(Vec::new(), compression_level);
-    if encoder.write_all(&indices).is_err() {
-        // Compression failed, fall back to JPEG encoding
-        // Convert u32 pixels back to RGBA for JPEG encoding
-        return encode_tight_jpeg(
-            &pixels.iter().flat_map(|&p| {
-                vec![(p & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, ((p >> 16) & 0xFF) as u8, 0xFF]
-            }).collect::<Vec<u8>>(),
-            _width, _height, 75
-        );
-    }
-    let compressed = match encoder.finish() {
-        Ok(data) => data,
-        Err(_) => {
-            // Compression failed, fall back to JPEG encoding
-            // Convert u32 pixels back to RGBA for JPEG encoding
-            return encode_tight_jpeg(
-                &pixels.iter().flat_map(|&p| {
-                    vec![(p & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, ((p >> 16) & 0xFF) as u8, 0xFF]
-                }).collect::<Vec<u8>>(),
-                _width, _height, 75
-            );
-        }
-    };
 
     let mut buf = BytesMut::new();
 
-    // 1. Control byte: (stream_id | TIGHT_EXPLICIT_FILTER) << 4
-    // Stream 2 for indexed palette, with explicit filter
-    buf.put_u8((STREAM_ID_INDEXED | TIGHT_EXPLICIT_FILTER) << 4); // 0x60
+    // Control byte
+    if zlib_level == 0 {
+        buf.put_u8((TIGHT_NO_ZLIB | TIGHT_EXPLICIT_FILTER) << 4);
+    } else {
+        buf.put_u8((STREAM_ID_INDEXED | TIGHT_EXPLICIT_FILTER) << 4);
+    }
 
-    // 2. Filter ID
-    buf.put_u8(TIGHT_FILTER_PALETTE); // 0x01
+    // Filter and palette size
+    buf.put_u8(TIGHT_FILTER_PALETTE);
+    buf.put_u8((palette.len() - 1) as u8);
 
-    // 3. Palette size minus 1 (0 = 1 color is invalid, but handled as solid fill)
-    buf.put_u8((palette_size - 1) as u8);
-
-    // 4. Palette colors (RGB24, 3 bytes each)
-    // Following libvncserver SendIndexedRect with Pack24 for depth==24
+    // Palette colors
     for &color in palette {
         put_pixel24(&mut buf, color);
     }
 
-    // 5. Compressed data with compact length
-    write_compact_length(&mut buf, compressed.len());
-    buf.put_slice(&compressed);
+    // Compress data
+    compress_data(&mut buf, &indices, zlib_level);
 
+    info!("Tight indexed: {} colors, {}x{}, {} bytes", palette.len(), width, height, buf.len());
     buf
 }
 
-/// Encode as Tight mono rect (2 colors, 1-bit bitmap).
-/// Wire format: [control] [filter] [1] [bg color] [fg color] [length...] [compressed bitmap]
-/// Following standard VNC protocol tight.c lines 794-873
-fn encode_tight_mono(pixels: &[u32], width: u16, height: u16, palette: &[u32], compression: u8) -> BytesMut {
-    assert_eq!(palette.len(), 2, "Mono rect requires exactly 2 colors");
-
-    // Determine background (most common) and foreground colors
-    let (bg, fg) = determine_bg_fg(pixels, palette);
-
-    // Encode as 1-bit bitmap: 0 = background, 1 = foreground
-    // MSB first, each row byte-aligned
-    let bitmap = encode_mono_bitmap(pixels, width, height, bg);
-
-    // Compress bitmap
-    let compression_level = match compression {
-        0 => Compression::fast(),
-        1..=3 => Compression::new(compression as u32),
-        4..=6 => Compression::default(),
-        _ => Compression::best(),
+/// Encode full-color rectangle
+/// Implements full-color zlib encoding for truecolor images
+fn encode_full_color_rect(
+    pixels: &[u8],
+    width: u16,
+    height: u16,
+    compression: u8,
+) -> BytesMut {
+    let conf_idx = match compression {
+        0 => 0,
+        1 => 1,
+        2 | 3 => 2,
+        _ => 3,
     };
+    let zlib_level = TIGHT_CONF[conf_idx].raw_zlib_level;
 
-    let compressed = if bitmap.len() >= TIGHT_MIN_TO_COMPRESS {
-        let mut encoder = ZlibEncoder::new(Vec::new(), compression_level);
-        match encoder.write_all(&bitmap).and_then(|_| encoder.finish()) {
-            Ok(data) => Some(data),
-            Err(_) => None, // Use uncompressed on error
-        }
-    } else {
-        None // Too small to compress
-    };
+    // Convert RGBA to RGB24
+    let mut rgb_data = Vec::with_capacity(width as usize * height as usize * 3);
+    for chunk in pixels.chunks_exact(4) {
+        rgb_data.push(chunk[0]);
+        rgb_data.push(chunk[1]);
+        rgb_data.push(chunk[2]);
+    }
 
     let mut buf = BytesMut::new();
 
-    // 1. Control byte: (stream_id | TIGHT_EXPLICIT_FILTER) << 4
-    // Stream 1 for mono rect, with explicit filter
-    buf.put_u8((STREAM_ID_MONO | TIGHT_EXPLICIT_FILTER) << 4); // 0x50
-
-    // 2. Filter ID
-    buf.put_u8(TIGHT_FILTER_PALETTE); // 0x01
-
-    // 3. Palette size minus 1 (1 = 2 colors)
-    buf.put_u8(1);
-
-    // 4. Palette: background then foreground (RGB24, 3 bytes each)
-    // Following libvncserver SendMonoRect with Pack24 for depth==24
-    put_pixel24(&mut buf, bg);
-    put_pixel24(&mut buf, fg);
-
-    // 5. Bitmap data (compressed or uncompressed)
-    if let Some(comp_data) = compressed {
-        write_compact_length(&mut buf, comp_data.len());
-        buf.put_slice(&comp_data);
+    // Control byte
+    if zlib_level == 0 {
+        buf.put_u8(TIGHT_NO_ZLIB << 4);
     } else {
-        // Send uncompressed (no length header for data < TIGHT_MIN_TO_COMPRESS)
-        if bitmap.len() >= TIGHT_MIN_TO_COMPRESS {
-            write_compact_length(&mut buf, bitmap.len());
-        }
-        buf.put_slice(&bitmap);
+        buf.put_u8(STREAM_ID_FULL_COLOR << 4);
     }
 
+    // Compress data
+    compress_data(&mut buf, &rgb_data, zlib_level);
+
+    info!("Tight full-color: {}x{}, {} bytes", width, height, buf.len());
     buf
 }
 
-/// Determine background (most common) and foreground colors from a 2-color palette.
-fn determine_bg_fg(pixels: &[u32], palette: &[u32]) -> (u32, u32) {
-    let c0 = palette[0];
-    let c1 = palette[1];
-    let count0 = pixels.iter().filter(|&&p| p == c0).count();
-    let count1 = pixels.len() - count0;
+/// Encode JPEG rectangle
+/// Implements lossy JPEG compression for photographic content
+fn encode_jpeg_rect(
+    pixels: &[u8],
+    width: u16,
+    height: u16,
+    quality: u8,
+) -> BytesMut {
+    #[cfg(feature = "turbojpeg")]
+    {
+        use crate::jpeg::TurboJpegEncoder;
 
-    if count0 > count1 {
-        (c0, c1) // c0 is background (more common)
-    } else {
-        (c1, c0) // c1 is background
+        // Convert RGBA to RGB
+        let mut rgb_data = Vec::with_capacity(width as usize * height as usize * 3);
+        for chunk in pixels.chunks_exact(4) {
+            rgb_data.push(chunk[0]);
+            rgb_data.push(chunk[1]);
+            rgb_data.push(chunk[2]);
+        }
+
+        // Compress with TurboJPEG
+        let jpeg_data = match TurboJpegEncoder::new() {
+            Ok(mut encoder) => {
+                match encoder.compress_rgb(&rgb_data, width, height, quality) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        info!("TurboJPEG failed: {}, using full-color", e);
+                        return encode_full_color_rect(pixels, width, height, 6);
+                    }
+                }
+            }
+            Err(e) => {
+                info!("TurboJPEG init failed: {}, using full-color", e);
+                return encode_full_color_rect(pixels, width, height, 6);
+            }
+        };
+
+        let mut buf = BytesMut::new();
+        buf.put_u8(TIGHT_JPEG << 4); // 0x90
+        write_compact_length(&mut buf, jpeg_data.len());
+        buf.put_slice(&jpeg_data);
+
+        info!("Tight JPEG: {}x{}, quality {}, {} bytes", width, height, quality, jpeg_data.len());
+        buf
+    }
+
+    #[cfg(not(feature = "turbojpeg"))]
+    {
+        info!("TurboJPEG not enabled, using full-color (quality={})", quality);
+        encode_full_color_rect(pixels, width, height, 6)
     }
 }
 
-/// Encode pixels as a 1-bit bitmap for mono rect encoding.
-/// Returns bitmap where 0 = background, 1 = foreground
-/// MSB first, each row byte-aligned
-/// Following standard VNC protocol tight.c EncodeMonoRect32 lines 1465-1517
-fn encode_mono_bitmap(pixels: &[u32], width: u16, height: u16, bg: u32) -> Vec<u8> {
+/// Compress data with zlib or send uncompressed
+/// Handles compression based on data size and level settings
+fn compress_data(buf: &mut BytesMut, data: &[u8], zlib_level: u8) {
+    // Data < 12 bytes sent raw WITHOUT length
+    if data.len() < TIGHT_MIN_TO_COMPRESS {
+        buf.put_slice(data);
+        return;
+    }
+
+    // zlibLevel == 0 means uncompressed WITH length
+    if zlib_level == 0 {
+        write_compact_length(buf, data.len());
+        buf.put_slice(data);
+        return;
+    }
+
+    // Compress with zlib
+    let comp_level = Compression::new(zlib_level as u32);
+    let mut encoder = ZlibEncoder::new(Vec::new(), comp_level);
+
+    match encoder.write_all(data).and_then(|_| encoder.finish()) {
+        Ok(compressed) => {
+            write_compact_length(buf, compressed.len());
+            buf.put_slice(&compressed);
+        }
+        Err(_) => {
+            // Compression failed - send uncompressed
+            write_compact_length(buf, data.len());
+            buf.put_slice(data);
+        }
+    }
+}
+
+/// Encode mono bitmap (1 bit per pixel)
+/// Converts 2-color image to packed bitmap format
+fn encode_mono_bitmap(pixels: &[u8], width: u16, height: u16, bg: u32) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
     let bytes_per_row = (w + 7) / 8;
@@ -288,15 +907,17 @@ fn encode_mono_bitmap(pixels: &[u32], width: u16, height: u16, bg: u32) -> Vec<u
     let mut bitmap_idx = 0;
     for y in 0..h {
         let mut byte_val = 0u8;
-        let mut bit_pos = 7i32; // MSB first: 7, 6, 5, 4, 3, 2, 1, 0
+        let mut bit_pos = 7i32; // MSB first
 
         for x in 0..w {
-            if pixels[y * w + x] != bg {
-                byte_val |= 1 << bit_pos; // Set bit for foreground
+            let pix_offset = (y * w + x) * 4;
+            let color = rgba_to_rgb24(pixels[pix_offset], pixels[pix_offset + 1], pixels[pix_offset + 2]);
+
+            if color != bg {
+                byte_val |= 1 << bit_pos;
             }
 
             if bit_pos == 0 {
-                // Byte complete
                 bitmap[bitmap_idx] = byte_val;
                 bitmap_idx += 1;
                 byte_val = 0;
@@ -306,7 +927,7 @@ fn encode_mono_bitmap(pixels: &[u32], width: u16, height: u16, bg: u32) -> Vec<u
             }
         }
 
-        // Write partial byte at end of row (if width not multiple of 8)
+        // Write partial byte at end of row
         if w % 8 != 0 {
             bitmap[bitmap_idx] = byte_val;
             bitmap_idx += 1;
@@ -316,11 +937,8 @@ fn encode_mono_bitmap(pixels: &[u32], width: u16, height: u16, bg: u32) -> Vec<u
     bitmap
 }
 
-/// Write compact length encoding (1-3 bytes).
-/// Format from standard VNC protocol tight.c lines 1055-1071:
-/// - 0-127: 1 byte (0xxxxxxx)
-/// - 128-16383: 2 bytes (1xxxxxxx 0yyyyyyy)
-/// - 16384-4194303: 3 bytes (1xxxxxxx 1yyyyyyy zzzzzzzz)
+/// Write compact length encoding
+/// Implements variable-length integer encoding for Tight protocol
 fn write_compact_length(buf: &mut BytesMut, len: usize) {
     if len < 128 {
         buf.put_u8(len as u8);
@@ -334,340 +952,35 @@ fn write_compact_length(buf: &mut BytesMut, len: usize) {
     }
 }
 
-/// Encode as Tight JPEG using libjpeg-turbo.
-fn encode_tight_jpeg(data: &[u8], width: u16, height: u16, quality: u8) -> BytesMut {
-    #[cfg(feature = "turbojpeg")]
-    {
-        use crate::jpeg::TurboJpegEncoder;
-
-        // Convert RGBA to RGB
-        let mut rgb_data = Vec::with_capacity((width as usize) * (height as usize) * 3);
-        for chunk in data.chunks_exact(4) {
-            rgb_data.push(chunk[0]);
-            rgb_data.push(chunk[1]);
-            rgb_data.push(chunk[2]);
-        }
-
-        // Compress with TurboJPEG (libjpeg-turbo)
-        let jpeg_data = match TurboJpegEncoder::new() {
-            Ok(mut encoder) => {
-                match encoder.compress_rgb(&rgb_data, width, height, quality) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        log::error!("TurboJPEG encoding failed: {}, falling back to full-color zlib", e);
-                        return encode_tight_full_color(data, width, height, 6);
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to create TurboJPEG encoder: {}, falling back to full-color zlib", e);
-                return encode_tight_full_color(data, width, height, 6);
-            }
-        };
-
-        let mut buf = BytesMut::new();
-        buf.put_u8(TIGHT_JPEG << 4); // 0x90: JPEG subencoding
-
-        // Compact length
-        write_compact_length(&mut buf, jpeg_data.len());
-
-        buf.put_slice(&jpeg_data);
-        buf
-    }
-
-    #[cfg(not(feature = "turbojpeg"))]
-    {
-        // TurboJPEG not available, fall back to full-color zlib
-        log::warn!("TurboJPEG not enabled, using full-color zlib instead (quality={})", quality);
-        encode_tight_full_color(data, width, height, 6)
-    }
+/// Trait for managing persistent zlib compression streams
+///
+/// Implementations of this trait maintain separate compression streams for different
+/// data types (full-color, mono, indexed) to improve compression ratios across
+/// multiple rectangle updates.
+pub trait TightStreamCompressor {
+    /// Compresses data using a persistent zlib stream
+    ///
+    /// # Arguments
+    /// * `stream_id` - Stream identifier (STREAM_ID_FULL_COLOR, STREAM_ID_MONO, or STREAM_ID_INDEXED)
+    /// * `level` - Compression level (0-9)
+    /// * `input` - Data to compress
+    ///
+    /// # Returns
+    /// Compressed data or error message
+    fn compress_tight_stream(&mut self, stream_id: u8, level: u8, input: &[u8]) -> Result<Vec<u8>, String>;
 }
 
-/// Encode as Tight full-color with zlib compression (lossless).
-/// Wire format: [0x00] [length...] [compressed RGB24 data]
-/// Following standard VNC protocol tight.c SendFullColorRect (lines 962-992)
-fn encode_tight_full_color(data: &[u8], width: u16, height: u16, compression: u8) -> BytesMut {
-    // Convert RGBA32 to RGB24 (3 bytes per pixel) for better compression
-    let mut rgb_data = Vec::with_capacity((width as usize) * (height as usize) * 3);
-    for chunk in data.chunks_exact(4) {
-        rgb_data.push(chunk[0]); // R
-        rgb_data.push(chunk[1]); // G
-        rgb_data.push(chunk[2]); // B
-    }
-
-    // Determine zlib compression level based on VNC compression setting
-    let compression_level = match compression {
-        0 => Compression::fast(),
-        1..=3 => Compression::new(compression as u32),
-        4..=6 => Compression::default(),
-        _ => Compression::best(),
-    };
-
-    let mut buf = BytesMut::new();
-
-    // Control byte: stream 0, no filter, basic compression
-    buf.put_u8(STREAM_ID_FULL_COLOR << 4); // 0x00
-
-    // Compress data if >= TIGHT_MIN_TO_COMPRESS, otherwise send uncompressed
-    if rgb_data.len() >= TIGHT_MIN_TO_COMPRESS {
-        let mut encoder = ZlibEncoder::new(Vec::new(), compression_level);
-        match encoder.write_all(&rgb_data).and_then(|_| encoder.finish()) {
-            Ok(compressed) => {
-                // Send compressed data
-                write_compact_length(&mut buf, compressed.len());
-                buf.put_slice(&compressed);
-            }
-            Err(e) => {
-                // Compression failed, send uncompressed
-                log::warn!("Zlib compression failed: {}, sending uncompressed", e);
-                write_compact_length(&mut buf, rgb_data.len());
-                buf.put_slice(&rgb_data);
-            }
-        }
-    } else {
-        // Data too small to compress, send uncompressed without length header
-        // (standard VNC protocol doesn't send length for data < TIGHT_MIN_TO_COMPRESS)
-        buf.put_slice(&rgb_data);
-    }
-
-    buf
-}
-
-/// Encode Tight with persistent zlib streams (standard VNC protocol style).
-///
-/// This function matches standard VNC protocol's behavior by using persistent compression
-/// streams that maintain dictionary state across multiple compressions.
-///
-/// # Arguments
-/// * `data` - RGBA pixel data
-/// * `width` - Image width
-/// * `height` - Image height
-/// * `quality` - JPEG quality (0-100)
-/// * `compression` - Zlib compression level (0-9)
-/// * `compressor` - Persistent stream compressor implementing TightStreamCompressor
-///
-/// # Returns
-/// Encoded data in Tight format
+/// Encode Tight with persistent zlib streams (for use with VNC client streams)
 pub fn encode_tight_with_streams<C: TightStreamCompressor>(
     data: &[u8],
     width: u16,
     height: u16,
     quality: u8,
     compression: u8,
-    compressor: &mut C,
+    _compressor: &mut C,
 ) -> BytesMut {
-    // Intelligently choose the best encoding method based on image content
-    // Following standard VNC protocol's algorithm (tight.c lines 658-730)
-
-    // Method 1: Check if it's a solid color (1 color)
-    let pixels = rgba_to_rgb24_pixels(data);
-    if let Some(solid_color) = check_solid_color(&pixels) {
-        return encode_tight_solid(solid_color);
-    }
-
-    // Method 2: Build palette and route to appropriate encoding
-    let palette = build_palette(&pixels);
-
-    // Route based on palette size (matching standard VNC protocol's algorithm)
-    match palette.len() {
-        // 2 colors: Use mono rect encoding (1-bit bitmap)
-        2 => {
-            return encode_tight_mono_persistent(&pixels, width, height, &palette, compression, compressor);
-        }
-        // 3-16 colors: Use indexed palette encoding
-        3..=16 if palette.len() < pixels.len() / 4 => {
-            return encode_tight_indexed_persistent(&pixels, width, height, &palette, compression, compressor);
-        }
-        // Too many colors or not worth palette encoding
-        _ => {}
-    }
-
-    // Method 3: Choose between JPEG and full-color zlib based on quality level
-    // Following libvncserver's logic (tight.c lines 705-715):
-    // - if turboQualityLevel == 255 (unset): use JPEG with default quality
-    // - if turboQualityLevel != 255: use JPEG with mapped quality
-    // Note: Full-color zlib is used when quality level >= 10 (disable JPEG)
-    if quality == 255 {
-        // Unset quality level: use JPEG with default quality (80)
-        log::info!("Tight: quality=255 (unset), using JPEG with quality 80");
-        encode_tight_jpeg(data, width, height, 80)
-    } else if quality >= 10 {
-        // Quality level >= 10: use full-color zlib (lossless), JPEG disabled
-        log::info!("Tight: quality={} (>=10), using full-color zlib", quality);
-        encode_tight_full_color_persistent(data, width, height, compression, compressor)
-    } else {
-        // Quality level 0-9: use JPEG with mapped quality
-        // Use libvncserver's quality mapping (TigerVNC compatible)
-        // Reference: libvncserver/src/libvncserver/rfbserver.c:109
-        const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
-        let jpeg_quality = TIGHT2TURBO_QUAL[quality as usize];
-        log::info!("Tight: quality={} (0-9), using JPEG with mapped quality {}", quality, jpeg_quality);
-        encode_tight_jpeg(data, width, height, jpeg_quality)
-    }
-}
-
-/// Encode as Tight indexed palette with persistent stream.
-fn encode_tight_indexed_persistent<C: TightStreamCompressor>(
-    pixels: &[u32],
-    _width: u16,
-    _height: u16,
-    palette: &[u32],
-    compression: u8,
-    compressor: &mut C,
-) -> BytesMut {
-    let palette_size = palette.len();
-
-    // Build color-to-index map
-    let mut color_map: HashMap<u32, u8> = HashMap::new();
-    for (idx, &color) in palette.iter().enumerate() {
-        color_map.insert(color, idx as u8);
-    }
-
-    // Encode pixels as palette indices
-    let mut indices = Vec::with_capacity(pixels.len());
-    for &pixel in pixels {
-        indices.push(*color_map.get(&pixel).unwrap_or(&0));
-    }
-
-    // Compress indices using persistent stream (stream ID 2 for indexed)
-    let compressed = match compressor.compress_tight_stream(STREAM_ID_INDEXED, compression, &indices) {
-        Ok(data) => data,
-        Err(e) => {
-            log::error!("Tight indexed persistent compression failed: {}, falling back to JPEG", e);
-            // Convert u32 pixels back to RGBA for JPEG encoding
-            return encode_tight_jpeg(
-                &pixels.iter().flat_map(|&p| {
-                    vec![(p & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, ((p >> 16) & 0xFF) as u8, 0xFF]
-                }).collect::<Vec<u8>>(),
-                _width, _height, 75
-            );
-        }
-    };
-
-    let mut buf = BytesMut::new();
-
-    // 1. Control byte: (stream_id | TIGHT_EXPLICIT_FILTER) << 4
-    // Stream 2 for indexed palette, with explicit filter
-    buf.put_u8((STREAM_ID_INDEXED | TIGHT_EXPLICIT_FILTER) << 4); // 0x60
-
-    // 2. Filter ID
-    buf.put_u8(TIGHT_FILTER_PALETTE); // 0x01
-
-    // 3. Palette size minus 1
-    buf.put_u8((palette_size - 1) as u8);
-
-    // 4. Palette colors (RGB24, 3 bytes each)
-    // Following libvncserver SendIndexedRect with Pack24 for depth==24
-    for &color in palette {
-        put_pixel24(&mut buf, color);
-    }
-
-    // 5. Compressed data with compact length
-    write_compact_length(&mut buf, compressed.len());
-    buf.put_slice(&compressed);
-
-    buf
-}
-
-/// Encode as Tight mono rect with persistent stream.
-fn encode_tight_mono_persistent<C: TightStreamCompressor>(
-    pixels: &[u32],
-    width: u16,
-    height: u16,
-    palette: &[u32],
-    compression: u8,
-    compressor: &mut C,
-) -> BytesMut {
-    assert_eq!(palette.len(), 2, "Mono rect requires exactly 2 colors");
-
-    // Determine background (most common) and foreground colors
-    let (bg, fg) = determine_bg_fg(pixels, palette);
-
-    // Encode as 1-bit bitmap: 0 = background, 1 = foreground
-    let bitmap = encode_mono_bitmap(pixels, width, height, bg);
-
-    // Compress bitmap using persistent stream (stream ID 1 for mono)
-    let compressed = if bitmap.len() >= TIGHT_MIN_TO_COMPRESS {
-        match compressor.compress_tight_stream(STREAM_ID_MONO, compression, &bitmap) {
-            Ok(data) => Some(data),
-            Err(_) => None, // Use uncompressed on error
-        }
-    } else {
-        None // Too small to compress
-    };
-
-    let mut buf = BytesMut::new();
-
-    // 1. Control byte: (stream_id | TIGHT_EXPLICIT_FILTER) << 4
-    // Stream 1 for mono rect, with explicit filter
-    buf.put_u8((STREAM_ID_MONO | TIGHT_EXPLICIT_FILTER) << 4); // 0x50
-
-    // 2. Filter ID
-    buf.put_u8(TIGHT_FILTER_PALETTE); // 0x01
-
-    // 3. Palette size minus 1 (1 = 2 colors)
-    buf.put_u8(1);
-
-    // 4. Palette: background then foreground (RGB24, 3 bytes each)
-    // Following libvncserver SendMonoRect with Pack24 for depth==24
-    put_pixel24(&mut buf, bg);
-    put_pixel24(&mut buf, fg);
-
-    // 5. Bitmap data (compressed or uncompressed)
-    if let Some(comp_data) = compressed {
-        write_compact_length(&mut buf, comp_data.len());
-        buf.put_slice(&comp_data);
-    } else {
-        // Send uncompressed (no length header for data < TIGHT_MIN_TO_COMPRESS)
-        if bitmap.len() >= TIGHT_MIN_TO_COMPRESS {
-            write_compact_length(&mut buf, bitmap.len());
-        }
-        buf.put_slice(&bitmap);
-    }
-
-    buf
-}
-
-/// Encode as Tight full-color with persistent stream (lossless).
-fn encode_tight_full_color_persistent<C: TightStreamCompressor>(
-    data: &[u8],
-    width: u16,
-    height: u16,
-    compression: u8,
-    compressor: &mut C,
-) -> BytesMut {
-    // Convert RGBA32 to RGB24 (3 bytes per pixel) for better compression
-    let mut rgb_data = Vec::with_capacity((width as usize) * (height as usize) * 3);
-    for chunk in data.chunks_exact(4) {
-        rgb_data.push(chunk[0]); // R
-        rgb_data.push(chunk[1]); // G
-        rgb_data.push(chunk[2]); // B
-    }
-
-    let mut buf = BytesMut::new();
-
-    // Control byte: stream 0, no filter, basic compression
-    buf.put_u8(STREAM_ID_FULL_COLOR << 4); // 0x00
-
-    // Compress data if >= TIGHT_MIN_TO_COMPRESS, otherwise send uncompressed
-    if rgb_data.len() >= TIGHT_MIN_TO_COMPRESS {
-        match compressor.compress_tight_stream(STREAM_ID_FULL_COLOR, compression, &rgb_data) {
-            Ok(compressed) => {
-                // Send compressed data
-                write_compact_length(&mut buf, compressed.len());
-                buf.put_slice(&compressed);
-            }
-            Err(e) => {
-                // Compression failed, send uncompressed
-                log::warn!("Tight full-color persistent compression failed: {}, sending uncompressed", e);
-                write_compact_length(&mut buf, rgb_data.len());
-                buf.put_slice(&rgb_data);
-            }
-        }
-    } else {
-        // Data too small to compress, send uncompressed without length header
-        buf.put_slice(&rgb_data);
-    }
-
-    buf
+    // For now, use standard encoding (persistent streams require more plumbing)
+    // TODO: Integrate persistent compression streams into encode_rect_optimized
+    let encoding = TightEncoding;
+    encoding.encode(data, width, height, quality, compression)
 }

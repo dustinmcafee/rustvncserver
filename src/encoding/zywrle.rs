@@ -247,9 +247,9 @@ fn wavelet(buf: &mut [i32], width: usize, height: usize, level: usize) {
 /// * `l` - Current level being filtered
 ///
 /// # Performance Note
-/// This function contains bounds checks in nested loops (lines 265, 270-272) which add
-/// ~2-3% overhead. The checks are necessary for safety but could be optimized with
-/// debug_assert! and unsafe indexing if profiling shows this as a bottleneck.
+/// This function contains bounds checks in nested loops which add ~2-3% overhead.
+/// The checks are necessary for safety but could be optimized with debug_assert!
+/// and unsafe indexing if profiling shows this as a bottleneck.
 fn filter_wavelet_square(buf: &mut [i32], width: usize, height: usize, level: usize, l: usize) {
     let param = &ZYWRLE_PARAM[level - 1][l];
     let s = 2 << l;
@@ -370,9 +370,9 @@ fn calc_aligned_size(width: usize, height: usize, level: usize) -> (usize, usize
 /// * `level` - Wavelet level
 ///
 /// # Performance Note
-/// This function contains bounds checks in nested loops (line 380) which add ~1-2% overhead.
-/// The checks are necessary for safety but could be optimized with debug_assert! and unsafe
-/// indexing if profiling shows this as a bottleneck.
+/// This function contains bounds checks in nested loops which add ~1-2% overhead.
+/// The checks are necessary for safety but could be optimized with debug_assert!
+/// and unsafe indexing if profiling shows this as a bottleneck.
 fn pack_coeff(buf: &[i32], dst: &mut [u8], r: usize, width: usize, height: usize, level: usize) {
     let s = 2 << level;
     let mut ph_offset = 0;
@@ -438,8 +438,8 @@ pub fn zywrle_analyze(
     let mut dst = Vec::with_capacity(width * height * 4);
     unsafe {
         // SAFETY: We will write to all bytes in this buffer before returning.
-        // The unaligned region copying (lines 432-465) writes to edges,
-        // and pack_coeff() writes to the aligned region (lines 474-481).
+        // The unaligned region copying writes to edges,
+        // and pack_coeff() writes to the aligned region.
         dst.set_len(width * height * 4);
     }
 

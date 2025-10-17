@@ -16,8 +16,8 @@
 //! Pixel format translation between server and client formats.
 //!
 //! This module provides pixel format conversion to support VNC clients with different
-//! color depths and pixel layouts. It implements the translation logic similar to
-//! standard VNC protocol's translate.c but using direct runtime conversion instead of lookup tables.
+//! color depths and pixel layouts. It implements the translation logic using direct
+//! runtime conversion instead of lookup tables.
 //!
 //! # Supported Formats
 //!
@@ -27,9 +27,9 @@
 //!
 //! # Performance
 //!
-//! While standard VNC protocol uses precomputed lookup tables for performance, modern Rust's
-//! optimizer can generate very efficient code for direct pixel translation. This approach
-//! trades a small amount of CPU for significantly simpler code and lower memory usage.
+//! This implementation uses direct pixel translation. Modern Rust's optimizer can generate
+//! very efficient code for this approach, trading a small amount of CPU for significantly
+//! simpler code and lower memory usage compared to lookup table approaches.
 
 use crate::protocol::PixelFormat;
 use bytes::BytesMut;
