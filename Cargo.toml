@@ -10,6 +10,9 @@ keywords = ["vnc", "rfb", "remote-desktop", "server"]
 categories = ["network-programming", "multimedia"]
 readme = "README.md"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
 bytes = "1"

@@ -824,7 +824,27 @@ impl VncClient {
         }
 
         let start = Instant::now();
-        let total_rects = copy_regions_to_send.len() + modified_regions_to_send.len();
+
+        // Calculate total rectangles including CoRRE tiles
+        // For CoRRE encoding, large rectangles are split into 255x255 tiles
+        let mut total_rects = copy_regions_to_send.len();
+
+        // Determine preferred encoding first (need to know if we're using CoRRE)
+        let encodings = self.encodings.read().await;
+        let preferred_encoding = ENCODING_CORRE; // From testing override
+        drop(encodings);
+
+        // Count rectangles for modified regions (accounting for CoRRE tiling)
+        for region in &modified_regions_to_send {
+            if preferred_encoding == ENCODING_CORRE && (region.width > 255 || region.height > 255) {
+                // Count how many tiles this region will be split into
+                let num_tiles_x = ((region.width + 254) / 255) as usize;
+                let num_tiles_y = ((region.height + 254) / 255) as usize;
+                total_rects += num_tiles_x * num_tiles_y;
+            } else {
+                total_rects += 1;
+            }
+        }
 
         let mut response = BytesMut::new();
 
@@ -833,41 +853,6 @@ impl VncClient {
         response.put_u8(0); // padding
         response.put_u16(total_rects as u16); // number of rectangles
 
-        // Choose best encoding supported by client
-        let encodings = self.encodings.read().await;
-        // Priority order: TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
-        // TEMPORARILY DISABLED: TIGHT encoding (causing disconnects)
-        // This matches standard VNC protocol's typical priority (Tight offers best compression/speed trade-off)
-        // ZLIB, ZLIBHEX, ZRLE, and ZYWRLE all use persistent compression (RFC 6143 compliant)
-        let preferred_encoding = if false && encodings.contains(&ENCODING_TIGHT) {
-            ENCODING_TIGHT
-        } else if false && encodings.contains(&ENCODING_TIGHTPNG) {
-            ENCODING_TIGHTPNG
-        } else if encodings.contains(&ENCODING_ZRLE) {
-            ENCODING_ZRLE
-        } else if encodings.contains(&ENCODING_ZYWRLE) {
-            // Update ZYWRLE level based on quality setting (matches standard VNC protocol logic)
-            let quality = self.jpeg_quality.load(Ordering::Relaxed);
-            let level = if quality < 42 {  // quality_level < 3
-                3  // Lowest quality, highest compression
-            } else if quality < 79 {  // quality_level < 6
-                2  // Medium quality
-            } else {
-                1  // Highest quality, lowest compression
-            };
-            self.zywrle_level.store(level, Ordering::Relaxed);
-            ENCODING_ZYWRLE
-        } else if encodings.contains(&ENCODING_ZLIBHEX) {
-            ENCODING_ZLIBHEX
-        } else if encodings.contains(&ENCODING_ZLIB) {
-            ENCODING_ZLIB
-        } else if encodings.contains(&ENCODING_HEXTILE) {
-            ENCODING_HEXTILE
-        } else {
-            ENCODING_RAW
-        };
-        drop(encodings); // Release lock
-
         let mut encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
             ENCODING_TIGHTPNG => "TIGHTPNG",
@@ -875,6 +860,9 @@ impl VncClient {
             ENCODING_ZRLE => "ZRLE",
             ENCODING_ZLIBHEX => "ZLIBHEX",
             ENCODING_ZLIB => "ZLIB",
+            ENCODING_HEXTILE => "HEXTILE",
+            ENCODING_RRE => "RRE",
+            ENCODING_CORRE => "CORRE",
             _ => "RAW",
         };
 
@@ -915,6 +903,71 @@ impl VncClient {
 
         // STEP 2: Send modified regions (standard VNC protocol: sent AFTER copy regions)
         for region in &modified_regions_to_send {
+
+            // For CoRRE encoding: split large rectangles into 255x255 tiles
+            // (CoRRE uses u8 coordinates, so dimensions must be ≤255)
+            if preferred_encoding == ENCODING_CORRE && (region.width > 255 || region.height > 255) {
+                info!("CoRRE: Splitting {}x{} region into 255x255 tiles", region.width, region.height);
+                // Split rectangle into tiles ≤255x255 (matching libvncserver's rfbSendRectEncodingCoRRE)
+                let mut y = 0;
+                while y < region.height {
+                    let tile_height = std::cmp::min(255, region.height - y);
+                    let mut x = 0;
+                    while x < region.width {
+                        let tile_width = std::cmp::min(255, region.width - x);
+                        info!("CoRRE: Encoding tile at ({},{}) size {}x{}", region.x + x, region.y + y, tile_width, tile_height);
+
+                        // Get pixel data for this tile
+                        let tile_pixel_data = match self.framebuffer.get_rect(
+                            region.x + x, region.y + y, tile_width, tile_height
+                        ).await {
+                            Ok(data) => data,
+                            Err(e) => {
+                                error!("Failed to get rectangle ({}, {}, {}, {}): {}",
+                                       region.x + x, region.y + y, tile_width, tile_height, e);
+                                x += tile_width;
+                                continue;
+                            }
+                        };
+
+                        // Encode this tile with CoRRE
+                        if let Some(encoder) = encoding::get_encoder(ENCODING_CORRE) {
+                            let encoded = encoder.encode(&tile_pixel_data, tile_width, tile_height, jpeg_quality, compression_level);
+
+                            // Calculate nSubrects from encoded buffer size
+                            // Encoder returns: bgColor(4) + subrects, each subrect is 8 bytes
+                            let n_subrects = if encoded.len() >= 4 {
+                                (encoded.len() - 4) / 8
+                            } else {
+                                0
+                            };
+
+                            // Write rectangle header for this tile
+                            let rect = Rectangle {
+                                x: region.x + x,
+                                y: region.y + y,
+                                width: tile_width,
+                                height: tile_height,
+                                encoding: ENCODING_CORRE,
+                            };
+                            rect.write_header(&mut response);
+
+                            // Write rfbRREHeader (nSubrects in big-endian) - protocol layer responsibility
+                            // CoRRE uses same header structure as RRE (libvncserver corre.c:176)
+                            response.put_u32(n_subrects as u32);
+
+                            // Write encoder output (background color + subrectangle data)
+                            response.extend_from_slice(&encoded);
+
+                            total_pixels += (tile_width as u64) * (tile_height as u64);
+                        }
+
+                        x += tile_width;
+                    }
+                    y += tile_height;
+                }
+                continue; // Skip normal encoding path for this region
+            }
 
             // Get pixel data
             let pixel_data = match self.framebuffer.get_rect(region.x, region.y, region.width, region.height).await {

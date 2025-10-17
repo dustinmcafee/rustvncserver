@@ -21,54 +21,49 @@
 use bytes::{BufMut, BytesMut};
 use super::Encoding;
 use super::common::{rgba_to_rgb24_pixels, get_background_color, find_subrects};
+use log::info;
 
 /// Implements the VNC "CoRRE" (Compact RRE) encoding.
 ///
 /// CoRRE is like RRE but uses compact subrectangles with u8 coordinates.
-/// Format: [nSubrects(u32)][bgColor][subrect1]...[subrectN]
+/// Format: [bgColor][nSubrects(u8)][subrect1]...[subrectN]
 /// Each subrect: [color][x(u8)][y(u8)][w(u8)][h(u8)]
 pub struct CorRreEncoding;
 
 impl Encoding for CorRreEncoding {
     fn encode(&self, data: &[u8], width: u16, height: u16, _quality: u8, _compression: u8) -> BytesMut {
-        // CoRRE is only suitable for small rectangles (< 256x256)
-        if width > 255 || height > 255 {
-            // Fall back to raw-style encoding
-            let mut buf = BytesMut::with_capacity(4 + 4);
-            buf.put_u32(0); // 0 subrects (big-endian)
-            let pixels = rgba_to_rgb24_pixels(data);
-            let bg_color = get_background_color(&pixels);
-            buf.put_u32_le(bg_color); // pixel in client format (little-endian)
-            return buf;
-        }
-
+        // CoRRE format (per RFC 6143 + libvncserver corre.c):
+        // Protocol layer writes: rfbFramebufferUpdateRectHeader + rfbRREHeader (nSubrects only)
+        // Encoder writes: bgColor + subrects (afterEncBuf in libvncserver)
+        // Each subrect: color(4) + x(1) + y(1) + w(1) + h(1)
         let pixels = rgba_to_rgb24_pixels(data);
         let bg_color = get_background_color(&pixels);
+
+        // Find subrectangles
         let subrects = find_subrects(&pixels, width as usize, height as usize, bg_color);
 
-        // Check if CoRRE is worth it
-        let encoded_size = 4 + 4 + (subrects.len() * (4 + 4)); // header + bg + compact subrects
-        let raw_size = width as usize * height as usize * 4; // 4 bytes per pixel for 32bpp
+        // Encoder output: background color + subrectangle data (matches libvncserver afterEncBuf)
+        // Protocol layer will write nSubrects separately as rfbRREHeader
+        let mut buf = BytesMut::with_capacity(4 + subrects.len() * 8);
+        buf.put_u32_le(bg_color); // background pixel value (little-endian)
 
-        if encoded_size >= raw_size {
-            let mut buf = BytesMut::with_capacity(4 + 4);
-            buf.put_u32(0); // 0 subrects (big-endian)
-            buf.put_u32_le(bg_color); // pixel in client format (little-endian)
-            return buf;
+        // Write subrectangles
+        for subrect in &subrects {
+            buf.put_u32_le(subrect.color); // pixel color (little-endian)
+            buf.put_u8(subrect.x as u8);   // x coordinate (u8)
+            buf.put_u8(subrect.y as u8);   // y coordinate (u8)
+            buf.put_u8(subrect.w as u8);   // width (u8)
+            buf.put_u8(subrect.h as u8);   // height (u8)
         }
 
-        let mut buf = BytesMut::with_capacity(encoded_size);
-
-        buf.put_u32(subrects.len() as u32); // count (big-endian)
-        buf.put_u32_le(bg_color); // pixel in client format (little-endian)
-
-        for subrect in subrects {
-            buf.put_u32_le(subrect.color); // pixel in client format (little-endian)
-            buf.put_u8(subrect.x as u8);   // u8 coordinates
-            buf.put_u8(subrect.y as u8);
-            buf.put_u8(subrect.w as u8);
-            buf.put_u8(subrect.h as u8);
-        }
+        // HEX DUMP: Log the exact bytes being encoded
+        let hex_str: String = buf.iter()
+            .take(32) // Only show first 32 bytes
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<String>>()
+            .join(" ");
+        info!("CoRRE encoded {}x{}: {} bytes ({}subrects) = [{}...]",
+              width, height, buf.len(), subrects.len(), hex_str);
 
         buf
     }
