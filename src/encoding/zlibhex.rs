@@ -51,10 +51,11 @@ pub fn encode_zlibhex_persistent(
 
     // Calculate maximum compressed size (zlib overhead formula)
     // From zlib.h: compressed size ≤ uncompressed + (uncompressed/1000) + 12
-    let max_compressed_size = hextile_data.len() + (hextile_data.len() / 100) + 12;
+    let max_compressed_size = hextile_data.len() + (hextile_data.len() / 1000) + 12;
     let mut compressed_output = vec![0u8; max_compressed_size];
 
-    // Track total_out before compression (standard VNC protocol style)
+    // Track total_in and total_out before compression
+    let previous_in = compressor.total_in();
     let previous_out = compressor.total_out();
 
     // Single deflate() call with Z_SYNC_FLUSH (RFC 6143 Section 7.7.2)
@@ -66,13 +67,13 @@ pub fn encode_zlibhex_persistent(
 
     // Calculate actual compressed length
     let compressed_len = (compressor.total_out() - previous_out) as usize;
+    let consumed_len = (compressor.total_in() - previous_in) as usize;
 
     // Verify all input was consumed
-    let total_consumed = (compressor.total_in() - (previous_out - compressed_len as u64)) as usize;
-    if total_consumed < hextile_data.len() {
+    if consumed_len < hextile_data.len() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("ZlibHex: incomplete compression {}/{}", total_consumed, hextile_data.len())
+            format!("ZlibHex: incomplete compression {}/{}", consumed_len, hextile_data.len())
         ));
     }
 

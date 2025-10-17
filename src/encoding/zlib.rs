@@ -49,7 +49,7 @@ pub fn encode_zlib_persistent(
 
     // Calculate maximum compressed size (zlib overhead formula)
     // From zlib.h: compressed size ≤ uncompressed + (uncompressed/1000) + 12
-    let max_compressed_size = pixel_data.len() + (pixel_data.len() / 100) + 12;
+    let max_compressed_size = pixel_data.len() + (pixel_data.len() / 1000) + 12;
     let mut compressed_output = vec![0u8; max_compressed_size];
 
     // Track total_in and total_out before compression

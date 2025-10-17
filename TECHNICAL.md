@@ -97,6 +97,32 @@ RustVNC is a complete VNC (Virtual Network Computing) server implementation writ
 | **Quality Level** | -32 to -23 | JPEG quality, ZYWRLE level | ✅ Yes |
 | **Compression Level** | -256 to -247 | Zlib compression level | ✅ Yes |
 
+### Untested Encodings (Client Compatibility Issues)
+
+The following encodings are fully implemented and RFC 6143 compliant but remain untested due to lack of client support:
+
+| Encoding | ID | Status | Client Support | Notes |
+|----------|----|----|----------------|-------|
+| **ZlibHex** | 8 | ✅ Implemented | ❌ Not in noVNC | Hextile + Zlib compression |
+| **CoRRE** | 4 | ✅ Implemented | ❌ Not in noVNC | Compact RRE with u8 coordinates |
+| **ZYWRLE** | 17 | ✅ Implemented | ❌ Not in noVNC | Wavelet-based lossy compression |
+
+**Why untested:**
+- **noVNC limitation**: The noVNC JavaScript client (commonly used for testing) does not support these encodings
+- **No reference implementation**: libvncserver never implemented ZlibHex (encoding ID 8 is defined but no code exists)
+- **Limited viewer support**: Few VNC viewers support ZYWRLE or CoRRE
+
+**Testing status:**
+- ✅ **Code reviewed**: All implementations verified against RFC 6143 and libvncserver patterns
+- ✅ **Bug fixes applied**: ZlibHex had 3 critical bugs fixed (buffer allocation, input tracking, consumption calculation)
+- ✅ **Wire format correct**: Matches RFC 6143 specification
+- ⚠️ **No end-to-end testing**: Cannot test with noVNC or standard viewers due to lack of client support
+
+**Recommendation:**
+- Use **ZRLE** (16) instead of ZYWRLE for palette compression (widely supported)
+- Use **Hextile** (5) instead of CoRRE for tile-based encoding (widely supported)
+- Use **Zlib** (6) instead of ZlibHex for compression (widely supported)
+
 ### Not Implemented (Low Priority)
 
 | Encoding | ID | Reason |

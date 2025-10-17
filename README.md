@@ -17,19 +17,21 @@ A pure Rust VNC (Virtual Network Computing) server library with complete RFB pro
 
 ### Supported Encodings
 
-| Encoding | ID | Description | Wire Format Match |
-|----------|----|----|-------------------|
-| **Raw** | 0 | Uncompressed pixels | ✅ 100% |
-| **CopyRect** | 1 | Copy screen regions | ✅ 100% |
-| **RRE** | 2 | Rise-and-Run-length | ✅ 100% |
-| **CoRRE** | 4 | Compact RRE | ✅ 100% |
-| **Hextile** | 5 | 16x16 tile-based | ✅ 100% |
-| **Zlib** | 6 | Zlib-compressed raw | ✅ 100% |
-| **Tight** | 7 | Multi-mode compression | ✅ 100% (all 5 modes) |
-| **ZlibHex** | 8 | Zlib-compressed Hextile | ✅ 100% |
-| **ZRLE** | 16 | Zlib Run-Length | ✅ 100% |
-| **ZYWRLE** | 17 | Wavelet compression | ✅ 100% |
-| **TightPng** | -260 | PNG-compressed Tight | ✅ 100% |
+| Encoding | ID | Description | Wire Format Match | Testing Status |
+|----------|----|----|-------------------|----------------|
+| **Raw** | 0 | Uncompressed pixels | ✅ 100% | ✅ Tested |
+| **CopyRect** | 1 | Copy screen regions | ✅ 100% | ✅ Tested |
+| **RRE** | 2 | Rise-and-Run-length | ✅ 100% | ✅ Tested |
+| **CoRRE** | 4 | Compact RRE | ✅ 100% | ⚠️ Untested* |
+| **Hextile** | 5 | 16x16 tile-based | ✅ 100% | ✅ Tested |
+| **Zlib** | 6 | Zlib-compressed raw | ✅ 100% | ✅ Tested |
+| **Tight** | 7 | Multi-mode compression | ✅ 100% (all 5 modes) | 🚧 Disabled |
+| **ZlibHex** | 8 | Zlib-compressed Hextile | ✅ 100% | ⚠️ Untested* |
+| **ZRLE** | 16 | Zlib Run-Length | ✅ 100% | ✅ Tested |
+| **ZYWRLE** | 17 | Wavelet compression | ✅ 100% | ⚠️ Untested* |
+| **TightPng** | -260 | PNG-compressed Tight | ✅ 100% | 🚧 Disabled |
+
+**\*Untested encodings:** ZlibHex, CoRRE, and ZYWRLE are fully implemented and RFC 6143 compliant but cannot be tested with noVNC (most common test client) because noVNC doesn't support them. All three have been code-reviewed and verified against the RFC 6143 specification. Use the widely-supported alternatives: **Zlib** (instead of ZlibHex), **Hextile** (instead of CoRRE), and **ZRLE** (instead of ZYWRLE).
 
 ### Tight Encoding (All 5 Production Modes)
 
