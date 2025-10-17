@@ -826,9 +826,9 @@ impl VncClient {
         // For CoRRE encoding, large rectangles are split into 255x255 tiles
         let mut total_rects = copy_regions_to_send.len();
 
-        // Determine preferred encoding first (need to know if we're using CoRRE)
+        // Determine preferred encoding from client's list (use first encoding the client sent)
         let encodings = self.encodings.read().await;
-        let preferred_encoding = ENCODING_CORRE; // From testing override
+        let preferred_encoding = encodings.first().copied().unwrap_or(ENCODING_RAW);
         drop(encodings);
 
         // Count rectangles for modified regions (accounting for CoRRE tiling)

@@ -15,126 +15,37 @@
 
 //! VNC TightPng encoding implementation.
 //!
-//! TightPng encoding is like Tight but uses PNG compression instead of JPEG.
-//! This provides lossless compression with good compression ratios.
+//! TightPng encoding uses PNG compression exclusively for all rectangles.
+//! Unlike standard Tight encoding which supports multiple compression modes
+//! (solid fill, palette, zlib, JPEG), TightPng ONLY uses PNG mode.
+//!
+//! This design is optimized for browser-based VNC clients like noVNC,
+//! which can decode PNG data natively in hardware without needing to
+//! handle zlib decompression or palette operations.
 
 use bytes::{BufMut, BytesMut};
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
-use std::io::Write;
-use std::collections::HashMap;
 use super::Encoding;
-use super::common::{rgba_to_rgb24_pixels, check_solid_color, build_palette, put_pixel32};
 use crate::protocol::TIGHT_PNG;
 
-/// Implements the VNC "TightPng" encoding with PNG, palette, and solid fill support.
+/// Implements the VNC "TightPng" encoding (encoding -260).
+///
+/// TightPng sends all pixel data as PNG-compressed images, regardless of
+/// content. This differs from standard Tight encoding which uses multiple
+/// compression strategies.
 pub struct TightPngEncoding;
 
 impl Encoding for TightPngEncoding {
     fn encode(&self, data: &[u8], width: u16, height: u16, _quality: u8, compression: u8) -> BytesMut {
-        // Intelligently choose the best encoding method based on image content
-
-        // Method 1: Check if it's a solid color
-        let pixels = rgba_to_rgb24_pixels(data);
-        if let Some(solid_color) = check_solid_color(&pixels) {
-            return encode_tightpng_solid(solid_color);
-        }
-
-        // Method 2: Check if palette encoding would be good
-        // Tight indexed color only supports 2-16 colors (RFC 6143 Section 7.7.5)
-        let palette = build_palette(&pixels);
-        if palette.len() >= 2 && palette.len() <= 16 && palette.len() < pixels.len() / 4 {
-            return encode_tightpng_palette(&pixels, width, height, &palette, compression);
-        }
-
-        // Method 3: Use PNG for all other content (lossless compression)
+        // TightPng ONLY uses PNG mode - no solid fill, no palette modes
+        // This is the key difference from standard Tight encoding
+        // Browser-based clients like noVNC expect only PNG data
         encode_tightpng_png(data, width, height, compression)
     }
 }
 
-/// Encode as TightPng solid fill.
-fn encode_tightpng_solid(color: u32) -> BytesMut {
-    let mut buf = BytesMut::with_capacity(5);
-    buf.put_u8(0x80); // Fill compression (solid color)
-    put_pixel32(&mut buf, color); // 4 bytes for 32bpp
-    buf
-}
-
-/// Encode as TightPng palette.
-fn encode_tightpng_palette(pixels: &[u32], _width: u16, _height: u16, palette: &[u32], compression: u8) -> BytesMut {
-    let palette_size = palette.len();
-
-    // Build color-to-index map
-    let mut color_map: HashMap<u32, u8> = HashMap::new();
-    for (idx, &color) in palette.iter().enumerate() {
-        color_map.insert(color, idx as u8);
-    }
-
-    // Encode pixels as palette indices
-    let mut indices = Vec::with_capacity(pixels.len());
-    for &pixel in pixels {
-        indices.push(*color_map.get(&pixel).unwrap_or(&0));
-    }
-
-    // Compress indices
-    let compression_level = match compression {
-        0 => Compression::fast(),
-        1..=3 => Compression::new(compression as u32),
-        4..=6 => Compression::default(),
-        _ => Compression::best(),
-    };
-
-    let mut encoder = ZlibEncoder::new(Vec::new(), compression_level);
-    if encoder.write_all(&indices).is_err() {
-        // Compression failed, fall back to PNG encoding
-        return encode_tightpng_png(
-            &pixels.iter().flat_map(|&p| {
-                vec![(p & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, ((p >> 16) & 0xFF) as u8, 0xFF]
-            }).collect::<Vec<u8>>(),
-            _width, _height, compression
-        );
-    }
-    let compressed = match encoder.finish() {
-        Ok(data) => data,
-        Err(_) => {
-            // Compression failed, fall back to PNG encoding
-            return encode_tightpng_png(
-                &pixels.iter().flat_map(|&p| {
-                    vec![(p & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, ((p >> 16) & 0xFF) as u8, 0xFF]
-                }).collect::<Vec<u8>>(),
-                _width, _height, compression
-            );
-        }
-    };
-
-    let mut buf = BytesMut::new();
-
-    // Compression control byte: palette compression
-    buf.put_u8(0x80 | ((palette_size - 1) as u8));
-
-    // Palette (each color is 4 bytes for 32bpp)
-    for &color in palette {
-        put_pixel32(&mut buf, color);
-    }
-
-    // Compact length
-    let len = compressed.len();
-    if len < 128 {
-        buf.put_u8(len as u8);
-    } else if len < 16384 {
-        buf.put_u8(((len & 0x7F) | 0x80) as u8);
-        buf.put_u8((len >> 7) as u8);
-    } else {
-        buf.put_u8(((len & 0x7F) | 0x80) as u8);
-        buf.put_u8((((len >> 7) & 0x7F) | 0x80) as u8);
-        buf.put_u8((len >> 14) as u8);
-    }
-
-    buf.put_slice(&compressed);
-    buf
-}
-
 /// Encode as TightPng using PNG compression.
+///
+/// This is the only compression mode used by TightPng encoding.
 fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) -> BytesMut {
     use png::{Encoder, ColorType, BitDepth};
 

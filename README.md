@@ -25,11 +25,11 @@ A pure Rust VNC (Virtual Network Computing) server library with complete RFB pro
 | **CoRRE** | 4 | Compact RRE | ✅ 100% | ⚠️ Untested* |
 | **Hextile** | 5 | 16x16 tile-based | ✅ 100% | ✅ Tested |
 | **Zlib** | 6 | Zlib-compressed raw | ✅ 100% | ✅ Tested |
-| **Tight** | 7 | Multi-mode compression | ✅ 100% (all 5 modes) | 🚧 Disabled |
+| **Tight** | 7 | Multi-mode compression | ✅ 100% (all 5 modes) | ✅ Tested |
 | **ZlibHex** | 8 | Zlib-compressed Hextile | ✅ 100% | ⚠️ Untested* |
 | **ZRLE** | 16 | Zlib Run-Length | ✅ 100% | ✅ Tested |
 | **ZYWRLE** | 17 | Wavelet compression | ✅ 100% | ⚠️ Untested* |
-| **TightPng** | -260 | PNG-compressed Tight | ✅ 100% | 🚧 Disabled |
+| **TightPng** | -260 | PNG-compressed Tight | ✅ 100% | ✅ Tested |
 
 **\*Untested encodings:** ZlibHex, CoRRE, and ZYWRLE are fully implemented and RFC 6143 compliant but cannot be tested with noVNC (most common test client) because noVNC doesn't support them. All three have been code-reviewed and verified against the RFC 6143 specification. Use the widely-supported alternatives: **Zlib** (instead of ZlibHex), **Hextile** (instead of CoRRE), and **ZRLE** (instead of ZYWRLE).
 
