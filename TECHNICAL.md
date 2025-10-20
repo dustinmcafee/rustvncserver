@@ -35,7 +35,6 @@ RustVNC is a complete VNC (Virtual Network Computing) server implementation writ
 - **Memory Safety**: Zero buffer overflows, use-after-free bugs, or null pointer dereferences
 - **Thread Safety**: No data races, safe concurrent client handling
 - **Modern Async I/O**: Built on Tokio runtime for efficient connection handling
-- **Smaller Codebase**: ~3,500 lines of Rust vs ~20,000 lines of C
 - **Better Performance**: Zero-copy framebuffer updates via Arc-based sharing
 
 ### Architecture
@@ -768,30 +767,42 @@ app/
 
 ### Cargo Configuration
 
-**File:** `app/src/main/rust/Cargo.toml`
+**Android App:** `app/src/main/rust/Cargo.toml`
 
 **Key Dependencies:**
 ```toml
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+rustvncserver = { path = "../../../../rustvncserver" }
+tokio = { version = "1", features = ["full"] }
+jni = "0.21"             # Java Native Interface
+log = "0.4"
+android_logger = "0.15"
+# Additional dependencies for VNC protocol support
+bytes = "1.5"
+flate2 = "1.0"           # Zlib compression
+png = "0.17"             # PNG encoding for TightPng
+des = "0.8"              # DES encryption for VNC auth
+rand = "0.8"             # Random number generation
+```
+
+**VNC Server Library:** `rustvncserver/Cargo.toml`
+
+**Key Dependencies:**
+```toml
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
 bytes = "1"
 flate2 = "1.0"           # Zlib compression
 png = "0.17"             # PNG encoding for TightPng
-jni = "0.21"             # Java Native Interface
 log = "0.4"
-android_logger = "0.13"
-
-[build-dependencies]
-cc = "1.0"               # For linking libturbojpeg
+thiserror = "1.0"        # Error handling
+des = "0.8"              # DES encryption for VNC auth
+rand = "0.8"             # Random number generation
 ```
 
-**Build Script:** `build.rs`
-```rust
-fn main() {
-    println!("cargo:rustc-link-lib=static=turbojpeg");
-    // Library path set via RUSTFLAGS from Gradle
-}
-```
+**Build Configuration:**
+- libjpeg-turbo is built separately via Gradle and linked via RUSTFLAGS
+- No build.rs needed - library paths set via Gradle build system
 
 ### Build System Overview
 
@@ -829,14 +840,20 @@ All methods follow the pattern: `Java_net_christianbeier_droidvnc_1ng_MainServic
 
 #### VncServer
 
-**File:** `src/vnc/server.rs`
+**File:** `src/server.rs`
 
 ```rust
+// Simplified structure - see actual code for complete implementation
 pub struct VncServer {
-    framebuffer: Arc<RwLock<Framebuffer>>,
-    clients: Arc<RwLock<HashMap<usize, Arc<RwLock<VncClient>>>>>,
-    next_client_id: AtomicUsize,
-    shutdown: Arc<AtomicBool>,
+    framebuffer: Framebuffer,
+    desktop_name: String,
+    password: Option<String>,
+    clients: Arc<RwLock<Vec<Arc<RwLock<VncClient>>>>>,
+    client_write_streams: Arc<RwLock<Vec<...>>>,
+    client_tasks: Arc<RwLock<Vec<JoinHandle<()>>>>,
+    client_ids: Arc<RwLock<Vec<usize>>>,
+    event_tx: mpsc::UnboundedSender<ServerEvent>,
+    // ... additional fields
 }
 
 impl VncServer {
@@ -852,15 +869,15 @@ impl VncServer {
 
 #### Framebuffer
 
-**File:** `src/vnc/framebuffer.rs`
+**File:** `src/framebuffer.rs`
 
 ```rust
 pub struct Framebuffer {
-    width: AtomicU16,
-    height: AtomicU16,
-    data: RwLock<Vec<u8>>,      // RGBA32 pixels
-    modified_regions: RwLock<Vec<Rect>>,
-    copy_regions: RwLock<Vec<CopyRect>>,
+    width: Arc<AtomicU16>,
+    height: Arc<AtomicU16>,
+    data: Arc<RwLock<Vec<u8>>>,      // RGBA32 pixels
+    receivers: Arc<RwLock<Vec<DirtyRegionReceiver>>>,
+    prev_data: Arc<RwLock<Vec<u8>>>,  // For CopyRect detection
 }
 
 impl Framebuffer {
@@ -874,20 +891,25 @@ impl Framebuffer {
 
 #### VncClient
 
-**File:** `src/vnc/client.rs`
+**File:** `src/client.rs`
 
 ```rust
+// Simplified structure - see actual code for complete implementation
 pub struct VncClient {
-    id: usize,
-    socket: TcpStream,
-    pixel_format: PixelFormat,
-    encodings: Vec<i32>,
-    quality_level: u8,
-    compression_level: u8,
-    // Persistent compression streams
-    zlib_stream: Option<Compress>,
-    zlibhex_stream: Option<Compress>,
-    zrle_stream: Option<Compress>,
+    client_id: usize,
+    read_stream: OwnedReadHalf,
+    write_stream: Arc<Mutex<OwnedWriteHalf>>,
+    framebuffer: Framebuffer,
+    pixel_format: RwLock<PixelFormat>,
+    encodings: RwLock<Vec<i32>>,
+    jpeg_quality: AtomicU8,
+    compression_level: AtomicU8,
+    quality_level: AtomicU8,
+    continuous_updates: AtomicBool,
+    // Persistent compression streams for various encodings
+    zlib_stream: RwLock<Option<ZlibEncoder>>,
+    tight_zlib_streams: RwLock<TightZlibStreams>,
+    // ... additional fields for region tracking, etc.
 }
 
 impl VncClient {
@@ -904,7 +926,7 @@ impl VncClient {
 
 #### PixelFormat
 
-**File:** `src/vnc/protocol.rs`
+**File:** `src/protocol.rs`
 
 ```rust
 #[repr(C, packed)]
@@ -953,45 +975,45 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 ### RFC 6143 Compliance Matrix
 
 | Feature Category | Feature | Status | Notes |
-|-----------------|---------|--------------|---------|-------|
-| **Protocol** | RFB 3.8 | ✅ | ✅ | Full compliance |
-| | Authentication | ✅ | ✅ | VNC auth supported |
-| | Clipboard | ✅ | ✅ | Bi-directional |
-| **Encodings** | Raw | ✅ | ✅ | Identical |
-| | CopyRect | ✅ | ✅ | Identical |
-| | RRE | ✅ | ✅ | Identical |
-| | CoRRE | ✅ | ✅ | Identical |
-| | Hextile | ✅ | ✅ | Identical |
-| | Zlib | ✅ | ✅ | Identical + persistent streams |
-| | ZlibHex | ✅ | ✅ | Identical + persistent streams |
-| | Tight | ✅ | ✅ | RFC 6143 compliant with persistent streams |
-| | TightPng | ✅ | ✅ | PNG-only compression mode |
-| | ZRLE | ✅ | ✅ | Identical + persistent streams |
-| | ZYWRLE | ✅ | ✅ | Identical wavelet implementation |
-| **Tight Modes** | Solid fill | ✅ | ✅ | RFC 6143 compliant |
-| | Mono rect | ✅ | ✅ | RFC 6143 compliant |
-| | Indexed palette | ✅ | ✅ | RFC 6143 compliant |
-| | Full-color zlib | ✅ | ✅ | RFC 6143 compliant |
-| | JPEG | ✅ | ✅ | libjpeg-turbo integration |
-| **Pixel Formats** | 8-bit | ✅ | ✅ | All variants |
-| | 16-bit | ✅ | ✅ | All variants |
-| | 24-bit | ✅ | ✅ | RGB888, BGR888 |
-| | 32-bit | ✅ | ✅ | All variants |
-| | Translation | ✅ | ✅ | Same `translateFn` pattern |
-| **Compression** | Quality levels | ✅ | ✅ | Identical (0-9) |
-| | Compression levels | ✅ | ✅ | Identical (0-9) |
-| | Persistent streams | ✅ | ✅ | Tight, Zlib, ZlibHex, ZRLE, ZYWRLE |
-| **Connections** | Listen | ✅ | ✅ | TCP server |
-| | Reverse | ✅ | ✅ | Direct to viewer |
-| | Repeater | ✅ | ✅ | UltraVNC Mode-2 |
-| | Multiple clients | ✅ | ✅ | Concurrent support |
-| **Framebuffer** | Update regions | ✅ | ✅ | Identical |
-| | Resize | ✅ | ✅ | Identical |
-| | CopyRect scheduling | ✅ | ✅ | Identical API |
-| **Not Implemented** | Cursor updates | ✅ | ❌ | Low priority |
-| | Desktop size notify | ✅ | ❌ | Low priority |
-| | File transfer | ✅ | ❌ | Unused in droidVNC-NG |
-| | H.264 | ❌ | ❌ | Removed in 2016 (both) |
+|-----------------|---------|--------|-------|
+| **Protocol** | RFB 3.8 | ✅ | Full compliance |
+| | Authentication | ✅ | VNC auth supported |
+| | Clipboard | ✅ | Bi-directional |
+| **Encodings** | Raw | ✅ | RFC 6143 compliant |
+| | CopyRect | ✅ | RFC 6143 compliant |
+| | RRE | ✅ | RFC 6143 compliant |
+| | CoRRE | ✅ | RFC 6143 compliant |
+| | Hextile | ✅ | RFC 6143 compliant |
+| | Zlib | ✅ | RFC 6143 compliant + persistent streams |
+| | ZlibHex | ✅ | RFC 6143 compliant + persistent streams |
+| | Tight | ✅ | RFC 6143 compliant with 4 persistent streams |
+| | TightPng | ✅ | PNG-only compression mode |
+| | ZRLE | ✅ | RFC 6143 compliant + persistent streams |
+| | ZYWRLE | ✅ | RFC 6143 compliant wavelet implementation |
+| **Tight Modes** | Solid fill | ✅ | RFC 6143 section 7.7.4 |
+| | Mono rect | ✅ | RFC 6143 section 7.7.4 |
+| | Indexed palette | ✅ | RFC 6143 section 7.7.4 |
+| | Full-color zlib | ✅ | RFC 6143 section 7.7.4 |
+| | JPEG | ✅ | libjpeg-turbo integration |
+| **Pixel Formats** | 8-bit | ✅ | All variants supported |
+| | 16-bit | ✅ | All variants supported |
+| | 24-bit | ✅ | RGB888, BGR888 |
+| | 32-bit | ✅ | All variants supported |
+| | Translation | ✅ | Full pixel format translation |
+| **Compression** | Quality levels | ✅ | Pseudo-encodings -32 to -23 (0-9) |
+| | Compression levels | ✅ | Pseudo-encodings -256 to -247 (0-9) |
+| | Persistent streams | ✅ | Tight (4), Zlib, ZlibHex, ZRLE, ZYWRLE |
+| **Connections** | Listen | ✅ | TCP server on specified port |
+| | Reverse | ✅ | Connect to viewer (listening mode) |
+| | Repeater | ✅ | UltraVNC repeater Mode-2 |
+| | Multiple clients | ✅ | Concurrent client support |
+| **Framebuffer** | Update regions | ✅ | Dirty region tracking |
+| | Resize | ✅ | Dynamic framebuffer resizing |
+| | CopyRect scheduling | ✅ | Efficient region copying |
+| **Not Implemented** | Cursor updates | ❌ | Low priority (pseudo-encoding -239) |
+| | Desktop size notify | ❌ | Low priority (pseudo-encoding -223) |
+| | File transfer | ❌ | Not part of RFC 6143 |
+| | H.264 | ❌ | Not part of RFC 6143 |
 
 ### Implementation Differences
 
@@ -1009,7 +1031,6 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 - ✅ Lower memory usage (no leaks, efficient allocation)
 
 **Code Quality:**
-- ✅ Smaller codebase (~3,500 vs ~20,000 lines)
 - ✅ Modern error handling (Result<T, E>)
 - ✅ Better type safety (compile-time checks)
 - ✅ Easier maintenance (Cargo dependency management)
@@ -1028,28 +1049,28 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 - ✅ Works with all VNC web clients (noVNC, etc.)
 - ✅ Identical behavior from client perspective
 
-### Performance Benchmarks
+### Performance Characteristics
 
-**Encoding Speed (1920x1080 frame):**
+**Encoding Performance:**
 
-| Encoding | Typical Time | Notes |
-|----------|-------------|-------|
-| Raw | 0.5 ms | Uncompressed baseline |
-| CopyRect | 0.1 ms | Ultra-fast region copy |
-| Hextile | 8 ms | Tile-based encoding |
-| Zlib | 15 ms | General compression |
-| Tight (JPEG) | 12 ms | JPEG compression (libjpeg-turbo) |
-| ZRLE | 18 ms | Run-length + palette |
-| ZYWRLE | 25 ms | Wavelet compression |
+The encoding performance varies by encoding type and content:
 
-**Memory Usage (10 concurrent clients):**
+| Encoding | Relative Speed | Characteristics |
+|----------|---------------|-----------------|
+| Raw | Fastest | No compression, largest bandwidth |
+| CopyRect | Fastest | Only 8 bytes per rectangle |
+| Hextile | Fast | Tile-based, moderate compression |
+| Zlib | Medium | Good general-purpose compression |
+| Tight (JPEG) | Medium | Best for photos, hardware-accelerated via libjpeg-turbo |
+| ZRLE | Medium | Excellent for text/UI with palette compression |
+| ZYWRLE | Slower | Highest compression ratio, lossy wavelet compression |
 
-| Metric | Usage | Notes |
-|--------|-------|-------|
-| Base memory | 12 MB | Server base footprint |
-| Per client | 1.5 MB | Per-client overhead |
-| Peak (10 clients) | 27 MB | Total with 10 clients |
-| Memory leaks | None | Rust memory safety guarantees |
+**Memory Usage:**
+
+- Rust memory safety guarantees eliminate memory leaks
+- Zero-copy framebuffer sharing via Arc reduces memory overhead
+- Per-client memory usage is minimal due to efficient stream management
+- Persistent compression streams reduce allocation overhead
 
 ### Code Examples
 
@@ -1075,14 +1096,10 @@ vncDoCopyRect();
 **Encoding Selection:**
 
 ```rust
-// Automatic encoding selection based on client capabilities
-let preferred_encoding = if encodings.contains(&ENCODING_TIGHT) {
-    ENCODING_TIGHT
-} else if encodings.contains(&ENCODING_TIGHTPNG) {
-    ENCODING_TIGHTPNG
-} else if encodings.contains(&ENCODING_ZRLE) {
-    ENCODING_ZRLE
-} // ... continues with standard VNC priority order
+// Encoding selection uses the first encoding from the client's list
+// Client sends encodings in preference order (highest priority first)
+let encodings = self.encodings.read().await;
+let preferred_encoding = encodings.first().copied().unwrap_or(ENCODING_RAW);
 ```
 
 ### Summary
