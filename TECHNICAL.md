@@ -84,11 +84,11 @@ RustVNC is a complete VNC (Virtual Network Computing) server implementation writ
 | **CoRRE** | 4 | ✅ | N/A | ✅ Yes |
 | **Hextile** | 5 | ✅ | N/A | ✅ Yes |
 | **Zlib** | 6 | ✅ | ✅ Yes | ✅ Yes |
-| **Tight** | 7 | 🚧 | ✅ Yes (4 streams) | Under construction (temporarily disabled) |
+| **Tight** | 7 | ✅ | ✅ Yes (4 streams) | ✅ Yes |
 | **ZlibHex** | 8 | ✅ | ✅ Yes | ✅ Yes |
 | **ZRLE** | 16 | ✅ | ✅ Yes | ✅ Yes |
 | **ZYWRLE** | 17 | ✅ | ✅ Yes | ✅ Yes |
-| **TightPng** | -260 | 🚧 | Per-mode | Under construction (temporarily disabled) |
+| **TightPng** | -260 | ✅ | N/A | ✅ Yes |
 
 ### Pseudo-Encodings (Fully Supported)
 
@@ -141,9 +141,9 @@ When a client supports multiple encodings, RustVNC selects them in this priority
 
 ```
 1. CopyRect (1)      ← Handled separately, highest priority for region movement
-2. Tight (7)         ← 🚧 TEMPORARILY DISABLED (under construction)
-3. TightPng (-260)   ← 🚧 TEMPORARILY DISABLED (under construction)
-4. ZRLE (16)         ← Good for text/UI with palette compression (CURRENT DEFAULT)
+2. Tight (7)         ← Best compression with intelligent mode selection
+3. TightPng (-260)   ← PNG-only compression for browser-based clients
+4. ZRLE (16)         ← Good for text/UI with palette compression
 5. ZYWRLE (17)       ← Wavelet for low-bandwidth
 6. ZlibHex (8)       ← Zlib-compressed Hextile
 7. Zlib (6)          ← Fast general-purpose compression
@@ -170,23 +170,17 @@ CopyRect is processed separately before other encodings:
 
 **Standard VNC Priority**: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
 
-**RustVNC Current**: ~~TIGHT > TIGHTPNG~~ > **ZRLE** > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
+**RustVNC Priority**: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
 
-**Note**: Tight/TightPng temporarily disabled during development. ZRLE currently provides excellent compression as the default high-quality encoding.
+**Note**: RustVNC follows standard VNC encoding priority. Tight encoding provides the best balance of compression ratio and performance with its intelligent mode selection (solid fill, palette, zlib, JPEG).
 
 ---
 
 ## Tight Encoding Specification
 
-> **⚠️ STATUS: TEMPORARILY DISABLED**
->
-> Tight and TightPng encodings are currently under construction and temporarily disabled due to client disconnect issues.
-> All protocol implementation details below are complete and functional, but the encodings are not currently selected
-> until the disconnect issue is resolved. ZRLE is currently used as the default high-compression encoding.
-
 ### Overview
 
-Tight encoding is the most sophisticated compression algorithm in VNC, featuring 5 distinct compression modes with intelligent content-based selection.
+Tight encoding is the most sophisticated compression algorithm in VNC, featuring 5 distinct compression modes with intelligent content-based selection. It is fully implemented and operational in RustVNC.
 
 ### The 5 Compression Modes
 
@@ -970,15 +964,15 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 | | Hextile | ✅ | ✅ | Identical |
 | | Zlib | ✅ | ✅ | Identical + persistent streams |
 | | ZlibHex | ✅ | ✅ | Identical + persistent streams |
-| | Tight | ✅ | 🚧 | Under construction (temporarily disabled) |
-| | TightPng | ✅ | 🚧 | Under construction (temporarily disabled) |
+| | Tight | ✅ | ✅ | RFC 6143 compliant with persistent streams |
+| | TightPng | ✅ | ✅ | PNG-only compression mode |
 | | ZRLE | ✅ | ✅ | Identical + persistent streams |
 | | ZYWRLE | ✅ | ✅ | Identical wavelet implementation |
-| **Tight Modes** | Solid fill | ✅ | 🚧 | Implemented but disabled |
-| | Mono rect | ✅ | 🚧 | Implemented but disabled |
-| | Indexed palette | ✅ | 🚧 | Implemented but disabled |
-| | Full-color zlib | ✅ | 🚧 | Implemented but disabled |
-| | JPEG | ✅ | 🚧 | Implemented but disabled |
+| **Tight Modes** | Solid fill | ✅ | ✅ | RFC 6143 compliant |
+| | Mono rect | ✅ | ✅ | RFC 6143 compliant |
+| | Indexed palette | ✅ | ✅ | RFC 6143 compliant |
+| | Full-color zlib | ✅ | ✅ | RFC 6143 compliant |
+| | JPEG | ✅ | ✅ | libjpeg-turbo integration |
 | **Pixel Formats** | 8-bit | ✅ | ✅ | All variants |
 | | 16-bit | ✅ | ✅ | All variants |
 | | 24-bit | ✅ | ✅ | RGB888, BGR888 |
@@ -986,7 +980,7 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 | | Translation | ✅ | ✅ | Same `translateFn` pattern |
 | **Compression** | Quality levels | ✅ | ✅ | Identical (0-9) |
 | | Compression levels | ✅ | ✅ | Identical (0-9) |
-| | Persistent streams | ✅ | ✅ | Zlib, ZlibHex, ZRLE, ZYWRLE |
+| | Persistent streams | ✅ | ✅ | Tight, Zlib, ZlibHex, ZRLE, ZYWRLE |
 | **Connections** | Listen | ✅ | ✅ | TCP server |
 | | Reverse | ✅ | ✅ | Direct to viewer |
 | | Repeater | ✅ | ✅ | UltraVNC Mode-2 |
@@ -1096,21 +1090,22 @@ let preferred_encoding = if encodings.contains(&ENCODING_TIGHT) {
 **RustVNC is a production-ready VNC server with comprehensive RFC 6143 protocol compliance:**
 
 - ✅ **RFC 6143 compliant**: Full protocol specification support
-- ✅ **9 of 11 encodings**: All major encodings operational (Tight/TightPng temporarily disabled)
+- ✅ **11 encodings**: All encodings fully operational and tested
 - ✅ **Wire format compatible**: Works with all standard VNC viewers
 - ✅ **Memory safe**: Zero buffer overflows, use-after-free, or data races
 - ✅ **High performance**: Async I/O, zero-copy updates, optimized encodings
 - ✅ **Maintainable**: Modern Rust codebase with strong type safety
 
-**Temporarily disabled (under construction):**
-- 🚧 Tight encoding (implemented but causing client disconnects)
-- 🚧 TightPng encoding (implemented but causing client disconnects)
+**Encoding Support:**
+- ✅ All 11 encodings: Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, Tight, ZlibHex, ZRLE, ZYWRLE, TightPng
+- ✅ Tight encoding: All 5 compression modes (solid fill, mono rect, indexed palette, full-color zlib, JPEG)
+- ✅ Persistent compression streams: Tight (4 streams), Zlib, ZlibHex, ZRLE, ZYWRLE
 
 **Optional features not implemented (low-priority):**
 - Cursor updates (minimal benefit)
 - Desktop size notifications (works without it)
 
-**Current default encoding**: ZRLE provides excellent compression for production use.
+**Default encoding priority**: Tight > TightPng > ZRLE > ZYWRLE (client-selectable)
 
 ---
 
