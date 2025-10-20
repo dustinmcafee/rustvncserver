@@ -1,6 +1,6 @@
-# RustVNC Technical Documentation
+# rustvncserver Technical Documentation
 
-Complete technical documentation for the Rust VNC server implementation and RFC 6143 protocol compliance.
+Complete technical documentation for the rustvncserver library and RFC 6143 protocol compliance.
 
 ---
 
@@ -12,7 +12,7 @@ Complete technical documentation for the Rust VNC server implementation and RFC 
 4. [Tight Encoding Specification](#tight-encoding-specification)
 5. [Pixel Format Translation](#pixel-format-translation)
 6. [Performance Characteristics](#performance-characteristics)
-7. [Build System](#build-system)
+7. [Building](#building)
 8. [API Reference](#api-reference)
 9. [Implementation Notes](#implementation-notes)
 
@@ -20,7 +20,7 @@ Complete technical documentation for the Rust VNC server implementation and RFC 
 
 ## Overview
 
-RustVNC is a complete VNC (Virtual Network Computing) server implementation written in Rust with full RFC 6143 protocol compliance.
+rustvncserver is a pure Rust VNC (Virtual Network Computing) server library with full RFC 6143 protocol compliance.
 
 ### Key Features
 
@@ -41,12 +41,7 @@ RustVNC is a complete VNC (Virtual Network Computing) server implementation writ
 
 ```
 ┌─────────────────────────────────────────────────┐
-│           Android Java/Kotlin Layer             │
-│                    (JNI)                        │
-└────────────────────┬────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────┐
-│              Rust VNC Server                    │
+│           rustvncserver Library                 │
 │  ┌──────────────────────────────────────────┐  │
 │  │  VncServer (TCP Listener/Connections)    │  │
 │  └──────────────────────────────────────────┘  │
@@ -136,7 +131,7 @@ The following encodings are fully implemented and RFC 6143 compliant but remain 
 
 ### Selection Algorithm
 
-When a client supports multiple encodings, RustVNC selects them in this priority order (following RFC 6143 best practices):
+When a client supports multiple encodings, the server selects them in this priority order (following RFC 6143 best practices):
 
 ```
 1. CopyRect (1)      ← Handled separately, highest priority for region movement
@@ -169,9 +164,9 @@ CopyRect is processed separately before other encodings:
 
 **Standard VNC Priority**: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
 
-**RustVNC Priority**: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
+**Implementation Priority**: TIGHT > TIGHTPNG > ZRLE > ZYWRLE > ZLIBHEX > ZLIB > HEXTILE > RAW
 
-**Note**: RustVNC follows standard VNC encoding priority. Tight encoding provides the best balance of compression ratio and performance with its intelligent mode selection (solid fill, palette, zlib, JPEG).
+**Note**: The library follows standard VNC encoding priority. Tight encoding provides the best balance of compression ratio and performance with its intelligent mode selection (solid fill, palette, zlib, JPEG).
 
 ---
 
@@ -179,7 +174,7 @@ CopyRect is processed separately before other encodings:
 
 ### Overview
 
-Tight encoding is the most sophisticated compression algorithm in VNC, featuring 5 distinct compression modes with intelligent content-based selection. It is fully implemented and operational in RustVNC.
+Tight encoding is the most sophisticated compression algorithm in VNC, featuring 5 distinct compression modes with intelligent content-based selection. It is fully implemented and operational in this library.
 
 ### The 5 Compression Modes
 
@@ -663,131 +658,32 @@ Low Compression                                    High Compression
 
 ---
 
-## Build System
-
-### Build Process Overview
-
-```
-1. libjpeg-turbo (CMake)
-   ├─ Configure for each ABI
-   ├─ Build static libraries
-   └─ Install to build/libjpeg-turbo/{abi}/
-
-2. Rust VNC Library (cargo-ndk)
-   ├─ Link against libjpeg-turbo
-   ├─ Build for each ABI
-   └─ Copy to src/main/jniLibs/{abi}/
-
-3. APK Assembly (Gradle)
-   └─ Package everything together
-```
+## Building
 
 ### Prerequisites
 
-1. **Rust toolchain** (1.76+)
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-
-2. **cargo-ndk**
-   ```bash
-   cargo install cargo-ndk
-   ```
-
-3. **Android NDK** (r23+) via Android Studio
-
-4. **CMake** (3.18.1+) via Android Studio SDK Manager
+**Rust toolchain** (1.76 or later)
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
 ### Build Commands
 
 ```bash
-# Build Rust library only
-./gradlew buildRust
+# Build library
+cargo build --release
 
-# Build full APK
-./gradlew assembleDebug    # or assembleRelease
+# Run tests
+cargo test
+
+# Build documentation
+cargo doc --open
 ```
 
-### libjpeg-turbo Build
+### Dependencies
 
-**Gradle Task:** `buildLibjpegTurbo`
+The library depends on the following crates (from `Cargo.toml`):
 
-**CMake Configuration:**
-```cmake
--DENABLE_SHARED=OFF          # Static library
--DENABLE_STATIC=ON
--DWITH_TURBOJPEG=ON          # Enable TurboJPEG API
--DWITH_SIMD=ON               # NEON on ARM, SSE2 on x86
--DCMAKE_BUILD_TYPE=Release
-```
-
-**Output:**
-- `lib/libturbojpeg.a` - Static library
-- `include/turbojpeg.h` - Header file
-
-### Rust Build
-
-**Gradle Task:** `buildRust`
-
-**Process:**
-1. Sets RUSTFLAGS with library paths
-2. Runs cargo-ndk for each ABI:
-   - `armeabi-v7a` (ARMv7, 32-bit)
-   - `arm64-v8a` (ARM64, 64-bit)
-   - `x86` (Intel 32-bit)
-   - `x86_64` (Intel 64-bit)
-3. Copies libraries to JNI directories
-
-**Command executed:**
-```bash
-cargo ndk \
-  --target {target-triple} \
-  --platform 21 \
-  build --release
-```
-
-### Output Locations
-
-```
-app/
-├── src/main/jniLibs/
-│   ├── armeabi-v7a/libdroidvnc_ng.so
-│   ├── arm64-v8a/libdroidvnc_ng.so
-│   ├── x86/libdroidvnc_ng.so
-│   └── x86_64/libdroidvnc_ng.so
-├── build/libjpeg-turbo/
-│   ├── armeabi-v7a/install/
-│   ├── arm64-v8a/install/
-│   ├── x86/install/
-│   └── x86_64/install/
-└── build/outputs/apk/
-    ├── debug/
-    └── release/
-```
-
-### Cargo Configuration
-
-**Android App:** `app/src/main/rust/Cargo.toml`
-
-**Key Dependencies:**
-```toml
-[dependencies]
-rustvncserver = { path = "../../../../rustvncserver" }
-tokio = { version = "1", features = ["full"] }
-jni = "0.21"             # Java Native Interface
-log = "0.4"
-android_logger = "0.15"
-# Additional dependencies for VNC protocol support
-bytes = "1.5"
-flate2 = "1.0"           # Zlib compression
-png = "0.17"             # PNG encoding for TightPng
-des = "0.8"              # DES encryption for VNC auth
-rand = "0.8"             # Random number generation
-```
-
-**VNC Server Library:** `rustvncserver/Cargo.toml`
-
-**Key Dependencies:**
 ```toml
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
@@ -800,43 +696,28 @@ des = "0.8"              # DES encryption for VNC auth
 rand = "0.8"             # Random number generation
 ```
 
-**Build Configuration:**
-- libjpeg-turbo is built separately via Gradle and linked via RUSTFLAGS
-- No build.rs needed - library paths set via Gradle build system
+### Optional Features
 
-### Build System Overview
+The library supports optional compilation features:
 
-| Aspect | Implementation |
-|--------|---------------|
-| **Build system** | Cargo + Gradle integration |
-| **Dependencies** | flate2, png, libjpeg-turbo |
-| **Android NDK** | cargo-ndk wrapper |
-| **Build time** | ~2-3 minutes |
-| **Complexity** | Medium (Rust/Cargo simplicity) |
+- `turbojpeg`: Enable hardware-accelerated JPEG compression via libjpeg-turbo (requires external library)
+
+### Integration
+
+The library can be integrated into any Rust project by adding to `Cargo.toml`:
+
+```toml
+[dependencies]
+rustvncserver = { path = "path/to/rustvncserver" }
+# Or from a git repository:
+# rustvncserver = { git = "https://github.com/username/rustvncserver" }
+```
 
 ---
 
 ## API Reference
 
-### JNI Methods
-
-All methods follow the pattern: `Java_net_christianbeier_droidvnc_1ng_MainService_vnc*`
-
-| Java Method | Purpose | Parameters | Return |
-|------------|---------|------------|--------|
-| `vncInit()` | Initialize Rust runtime | None | void |
-| `vncStartServer(port, password)` | Start VNC server | port: int, password: String | boolean |
-| `vncStopServer()` | Stop VNC server | None | void |
-| `vncUpdateFramebuffer(data, x, y, w, h)` | Update screen region | ByteBuffer, ints | void |
-| `vncNewFramebuffer(width, height)` | Resize framebuffer | width: int, height: int | void |
-| `vncConnectReverse(host, port)` | Reverse connection | host: String, port: int | boolean |
-| `vncConnectRepeater(host, port, id)` | Repeater connection | Strings, int | boolean |
-| `vncIsActive()` | Check if running | None | boolean |
-| `vncSendCutText(text)` | Send clipboard | text: String | void |
-| `vncScheduleCopyRect(x, y, w, h, dx, dy)` | Schedule CopyRect | ints | void |
-| `vncDoCopyRect()` | Execute CopyRect | None | void |
-
-### Core Rust Types
+### Core Types and Public API
 
 #### VncServer
 
@@ -955,7 +836,7 @@ impl PixelFormat {
 
 ### API Design Principles
 
-RustVNC provides a clean, modern API with full VNC protocol support:
+The library provides a clean, modern API with full VNC protocol support:
 
 | Feature | API Method | Notes |
 |---------|-----------|-------|
@@ -965,8 +846,8 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 | **Framebuffer resize** | `resize_framebuffer()` | Dynamic resizing |
 | **Reverse connection** | `connect_reverse()` | Connect to viewer |
 | **Repeater** | `connect_repeater()` | UltraVNC Mode-2 |
-| **CopyRect** | `vncScheduleCopyRect()` | Efficient region copy |
-| **Clipboard** | `vncSendCutText()` | Bidirectional clipboard |
+| **CopyRect** | `schedule_copy_rect()` | Efficient region copy |
+| **Clipboard** | Event-based | Via ServerEvent channel |
 
 ---
 
@@ -1017,7 +898,7 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 
 ### Implementation Differences
 
-#### Advantages of RustVNC
+#### Implementation Advantages
 
 **Memory Safety:**
 - ✅ No buffer overflows (compile-time guarantees)
@@ -1037,7 +918,7 @@ RustVNC provides a clean, modern API with full VNC protocol support:
 
 #### Concurrency Model
 
-**RustVNC uses modern async/await with Tokio:**
+**Modern async/await with Tokio:**
 - Async/await pattern for non-blocking I/O
 - Excellent scalability with many concurrent clients
 - Lower resource overhead compared to thread-per-client models
@@ -1086,11 +967,10 @@ server.update_framebuffer(&data, x, y, width, height);
 **CopyRect Operation:**
 
 ```rust
-// Schedule copy region (via JNI from Java)
-vncScheduleCopyRect(x, y, width, height, dx, dy);
+// Schedule copy region for efficient scrolling/dragging
+framebuffer.schedule_copy_rect(x, y, width, height, dx, dy);
 
-// Execute the copy
-vncDoCopyRect();
+// CopyRect regions are sent automatically with the next framebuffer update
 ```
 
 **Encoding Selection:**
@@ -1104,7 +984,7 @@ let preferred_encoding = encodings.first().copied().unwrap_or(ENCODING_RAW);
 
 ### Summary
 
-**RustVNC is a production-ready VNC server with comprehensive RFC 6143 protocol compliance:**
+**rustvncserver is a production-ready VNC server library with comprehensive RFC 6143 protocol compliance:**
 
 - ✅ **RFC 6143 compliant**: Full protocol specification support
 - ✅ **11 encodings**: All encodings fully operational and tested
