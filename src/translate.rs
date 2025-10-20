@@ -325,7 +325,7 @@ mod tests {
         // 5-bit (0-31) to 8-bit (0-255)
         assert_eq!(scale_component(0, 31), 0);
         assert_eq!(scale_component(31, 31), 255);
-        assert_eq!(scale_component(15, 31), 124); // ~half
+        assert_eq!(scale_component(15, 31), 123); // 15 * 255 / 31 = 123.387... = 123
 
         // Identity: 8-bit to 8-bit
         assert_eq!(scale_component(128, 255), 128);

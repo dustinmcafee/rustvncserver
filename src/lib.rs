@@ -36,25 +36,36 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use rustvncserver::{VncServer, ServerEvent};
+//! use rustvncserver::VncServer;
+//! use rustvncserver::server::ServerEvent;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Create a VNC server with 1920x1080 framebuffer
-//!     let server = VncServer::new(1920, 1080);
+//!     let (server, mut event_rx) = VncServer::new(
+//!         1920,
+//!         1080,
+//!         "My Desktop".to_string(),
+//!         Some("secret".to_string()), // Optional password
+//!     );
 //!
-//!     // Optional: Set a password
-//!     server.set_password(Some("secret".to_string()));
-//!
-//!     // Start listening on port 5900
-//!     let server_handle = tokio::spawn(async move {
-//!         server.listen(5900).await
+//!     // Handle events from clients in a background task
+//!     tokio::spawn(async move {
+//!         while let Some(event) = event_rx.recv().await {
+//!             match event {
+//!                 ServerEvent::ClientConnected { client_id } => {
+//!                     println!("Client {} connected", client_id);
+//!                 }
+//!                 ServerEvent::ClientDisconnected { client_id } => {
+//!                     println!("Client {} disconnected", client_id);
+//!                 }
+//!                 _ => {}
+//!             }
+//!         }
 //!     });
 //!
-//!     // Update the framebuffer
-//!     // server.update_framebuffer(&pixels, 0, 0, 1920, 1080);
-//!
-//!     server_handle.await??;
+//!     // Start listening on port 5900 (blocks until server stops)
+//!     server.listen(5900).await?;
 //!     Ok(())
 //! }
 //! ```
