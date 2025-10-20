@@ -1328,6 +1328,14 @@ impl VncClient {
     }
 }
 
+/// Ensures proper cleanup when VncClient is dropped.
+///
+/// When VncClient is dropped, the read half of the TCP stream (`read_stream: OwnedReadHalf`)
+/// is automatically closed because it's an owned field. This completes the client disconnect
+/// sequence after the write half has been closed separately during shutdown.
+///
+/// The log message helps diagnose the shutdown sequence by confirming when VncClient
+/// objects are actually being dropped and their TCP read streams are closing.
 impl Drop for VncClient {
     fn drop(&mut self) {
         log::info!("VncClient {} is being dropped (read half will close now)", self.client_id);

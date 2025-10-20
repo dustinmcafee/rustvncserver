@@ -61,7 +61,11 @@ pub struct VncServer {
     client_write_streams: Arc<RwLock<Vec<Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>>>>,
     /// Task handles for waiting on client threads to exit
     client_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
-    /// List of active client IDs for fast lookup without locking VncClient objects
+    /// List of active client IDs for fast lookup during shutdown without locking VncClient objects.
+    ///
+    /// This list is maintained separately from the `clients` list to allow the shutdown process
+    /// to quickly retrieve all client IDs without acquiring locks on potentially busy VncClient
+    /// objects, which could cause delays or deadlocks during server shutdown.
     client_ids: Arc<RwLock<Vec<usize>>>,
     /// Sender for server-wide events, used to notify external components of VNC server activity.
     event_tx: mpsc::UnboundedSender<ServerEvent>,
@@ -217,6 +221,29 @@ impl VncServer {
         }
     }
 
+    /// Handles a newly connected VNC client through its entire lifecycle.
+    ///
+    /// This function performs the VNC handshake, creates a VncClient instance, spawns
+    /// a message handler task, and processes client events until disconnection. It stores
+    /// all necessary handles (task handles, write streams, client IDs) to enable proper
+    /// cleanup during server shutdown.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - The TCP stream for the connected client
+    /// * `client_id` - Unique identifier assigned to this client
+    /// * `framebuffer` - The framebuffer to send to the client
+    /// * `desktop_name` - Name of the desktop session
+    /// * `password` - Optional password for authentication
+    /// * `clients` - Shared list of all connected VncClient instances
+    /// * `client_write_streams` - Shared list of write stream handles for socket shutdown
+    /// * `client_tasks` - Shared list of task handles for cleanup during shutdown
+    /// * `client_ids` - Shared list of client IDs for fast lookup during shutdown
+    /// * `server_event_tx` - Channel for sending server events (connect/disconnect/input)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the client disconnects normally, or `Err` if an I/O error occurs.
     async fn handle_client(
         stream: TcpStream,
         client_id: usize,
@@ -371,8 +398,10 @@ impl VncServer {
     /// Establishes a direct reverse VNC connection to a client viewer.
     ///
     /// This method initiates an outbound TCP connection to a VNC viewer listening
-    /// for reverse connections. Unlike `connect_repeater`, this is a direct connection
-    /// without the repeater protocol overhead.
+    /// for reverse connections. The function spawns a background task to handle the
+    /// connection lifecycle, including performing the VNC handshake, spawning a message
+    /// handler task, and processing client events. Task handles, write stream handles,
+    /// and client IDs are stored for proper cleanup during server shutdown.
     ///
     /// # Arguments
     ///
@@ -544,8 +573,14 @@ impl VncServer {
 
     /// Connects the VNC server to a VNC repeater, establishing a reverse connection.
     ///
-    /// This allows a client behind a NAT or firewall to connect to the server.
-    /// The function waits for the actual connection to be established before returning.
+    /// This allows a client behind a NAT or firewall to connect to the server through a VNC
+    /// repeater proxy. The function spawns a background task to handle the connection lifecycle,
+    /// including performing the repeater handshake, VNC handshake, spawning a message handler task,
+    /// and processing client events. Task handles, write stream handles, and client IDs are stored
+    /// for proper cleanup during server shutdown.
+    ///
+    /// The function waits for the repeater connection to be established before returning the
+    /// client ID to the caller.
     ///
     /// # Arguments
     ///
@@ -805,16 +840,30 @@ impl VncServer {
         }
     }
 
-    /// Disconnects all connected clients.
+    /// Disconnects all connected clients by cleanly shutting down their tasks and TCP connections.
     ///
-    /// This method performs cleanup by:
-    /// 1. Aborting all client tasks
-    /// 2. Waiting for tasks to exit (drops task's Arc<VncClient>)
-    /// 3. Clearing client list (drops list's Arc<VncClient>, causing VncClient to drop and read half to close)
-    /// 4. Closing all write halves
+    /// This method performs a coordinated shutdown sequence to ensure both halves of each client's
+    /// TCP connection are properly closed. The order of operations is critical to avoid orphaned
+    /// connections:
     ///
-    /// The caller should use a timeout wrapper to prevent blocking too long.
-    /// The caller is responsible for notifying Java-side components before calling this method.
+    /// 1. **Abort all client tasks** - Signals all message handler and event handler tasks to cancel
+    /// 2. **Wait for tasks to exit** - Blocks until tasks complete, ensuring their `Arc<VncClient>`
+    ///    references are dropped
+    /// 3. **Clear client lists** - Removes the final `Arc<VncClient>` references from the server's
+    ///    client list, causing `VncClient` to drop and automatically close the read half of the
+    ///    TCP connection
+    /// 4. **Close write halves** - Explicitly calls `shutdown()` on the write halves to close the
+    ///    write side of the TCP connection
+    ///
+    /// After this sequence completes, both sides of the TCP connection are closed and the client
+    /// will receive a disconnect notification.
+    ///
+    /// # Notes
+    ///
+    /// - The caller should wrap this in a timeout to prevent indefinite blocking
+    /// - The caller is responsible for calling Java-side cleanup (e.g., removing cursors) before
+    ///   invoking this method
+    /// - All client IDs, task handles, and write streams are cleared from their respective lists
     pub async fn disconnect_all_clients(&self) {
         use tokio::io::AsyncWriteExt;
 
