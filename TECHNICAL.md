@@ -710,7 +710,7 @@ The library can be integrated into any Rust project by adding to `Cargo.toml`:
 [dependencies]
 rustvncserver = { path = "path/to/rustvncserver" }
 # Or from a git repository:
-# rustvncserver = { git = "https://github.com/username/rustvncserver" }
+# rustvncserver = { git = "https://github.com/dustinmcafee/rustvncserver" }
 ```
 
 ---
