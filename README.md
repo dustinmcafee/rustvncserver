@@ -269,7 +269,6 @@ This pure Rust implementation provides several advantages over traditional C imp
 - ✅ Memory safety (no buffer overflows, use-after-free)
 - ✅ Thread safety (no data races)
 - ✅ Modern async I/O (better scalability)
-- ✅ Smaller codebase (~3,500 vs ~20,000 lines)
 - ✅ Better error handling
 - ✅ Zero-copy framebuffer updates
 
