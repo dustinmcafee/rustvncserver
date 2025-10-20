@@ -259,7 +259,7 @@ pub enum ServerEvent {
 - ✅ Linux (x86_64, ARM64)
 - ✅ macOS (x86_64, Apple Silicon)
 - ✅ Windows (x86_64)
-- ✅ Android (via JNI wrapper - see [RustVNC](https://github.com/yourusername/RustVNC))
+- ✅ Android (via JNI wrapper - see [RustVNC](https://github.com/dustinmcafee/RustVNC))
 
 ## Why Rust?
 
