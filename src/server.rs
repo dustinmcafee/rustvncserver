@@ -57,6 +57,12 @@ pub struct VncServer {
     password: Option<String>,
     /// A list of currently connected VNC clients, protected by a `RwLock` for concurrent access.
     clients: Arc<RwLock<Vec<Arc<RwLock<VncClient>>>>>,
+    /// Write stream handles for direct socket shutdown
+    client_write_streams: Arc<RwLock<Vec<Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>>>>,
+    /// Task handles for waiting on client threads to exit
+    client_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+    /// List of active client IDs for fast lookup without locking VncClient objects
+    client_ids: Arc<RwLock<Vec<usize>>>,
     /// Sender for server-wide events, used to notify external components of VNC server activity.
     event_tx: mpsc::UnboundedSender<ServerEvent>,
 }
@@ -133,6 +139,9 @@ impl VncServer {
             desktop_name,
             password,
             clients: Arc::new(RwLock::new(Vec::new())),
+            client_write_streams: Arc::new(RwLock::new(Vec::new())),
+            client_tasks: Arc::new(RwLock::new(Vec::new())),
+            client_ids: Arc::new(RwLock::new(Vec::new())),
             event_tx,
         };
 
@@ -173,9 +182,13 @@ impl VncServer {
                     let desktop_name = self.desktop_name.clone();
                     let password = self.password.clone();
                     let clients = self.clients.clone();
+                    let client_write_streams = self.client_write_streams.clone();
+                    let client_tasks = self.client_tasks.clone();
+                    let client_tasks_for_spawn = client_tasks.clone();
+                    let client_ids = self.client_ids.clone();
                     let server_event_tx = self.event_tx.clone();
 
-                    tokio::spawn(async move {
+                    let handle = tokio::spawn(async move {
                         if let Err(e) = Self::handle_client(
                             stream,
                             client_id,
@@ -183,6 +196,9 @@ impl VncServer {
                             desktop_name,
                             password,
                             clients,
+                            client_write_streams,
+                            client_tasks_for_spawn,
+                            client_ids,
                             server_event_tx,
                         )
                         .await
@@ -190,6 +206,9 @@ impl VncServer {
                             error!("Client {} error: {}", client_id, e);
                         }
                     });
+
+                    // Store the handle_client task handle for joining later
+                    client_tasks.write().await.push(handle);
                 }
                 Err(e) => {
                     error!("Error accepting connection: {}", e);
@@ -205,6 +224,9 @@ impl VncServer {
         desktop_name: String,
         password: Option<String>,
         clients: Arc<RwLock<Vec<Arc<RwLock<VncClient>>>>>,
+        client_write_streams: Arc<RwLock<Vec<Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>>>>,
+        client_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+        client_ids: Arc<RwLock<Vec<usize>>>,
         server_event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<(), std::io::Error> {
         let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
@@ -226,16 +248,24 @@ impl VncServer {
         let receiver = DirtyRegionReceiver::new(Arc::downgrade(&regions_arc));
         framebuffer.register_receiver(receiver).await;
 
+        // Store the write stream handle for direct socket shutdown
+        let write_stream_handle = {
+            let client = client_arc.read().await;
+            client.get_write_stream_handle()
+        };
+        client_write_streams.write().await.push(write_stream_handle);
+
         clients.write().await.push(client_arc.clone());
+        client_ids.write().await.push(client_id);
 
         let _ = server_event_tx.send(ServerEvent::ClientConnected { client_id });
 
-        // Spawn task to handle client messages
+        // Spawn task to handle client messages and store handle for joining
         // Note: The message handler holds a write lock for its duration, which means
         // operations like send_cut_text() will wait for the lock. This is acceptable
         // since clipboard operations are infrequent and the async lock prevents deadlocks.
         let client_arc_clone = client_arc.clone();
-        tokio::spawn(async move {
+        let msg_handle = tokio::spawn(async move {
             let result = {
                 let mut client = client_arc_clone.write().await;
                 client.handle_messages().await
@@ -244,6 +274,9 @@ impl VncServer {
                 error!("Client {} message handling error: {}", client_id, e);
             }
         });
+
+        // Store the message handler task handle for joining later
+        client_tasks.write().await.push(msg_handle);
 
         // Handle client events
         while let Some(event) = client_event_rx.recv().await {
@@ -275,6 +308,11 @@ impl VncServer {
         // Remove client from list
         let mut clients_guard = clients.write().await;
         clients_guard.retain(|c| !Arc::ptr_eq(c, &client_arc));
+        drop(clients_guard);
+
+        let mut client_ids_guard = client_ids.write().await;
+        client_ids_guard.retain(|&id| id != client_id);
+        drop(client_ids_guard);
 
         let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
@@ -366,6 +404,9 @@ impl VncServer {
         let desktop_name = self.desktop_name.clone();
         let password = self.password.clone();
         let clients = self.clients.clone();
+        let client_write_streams = self.client_write_streams.clone();
+        let client_tasks = self.client_tasks.clone();
+        let client_ids = self.client_ids.clone();
         let server_event_tx = self.event_tx.clone();
 
         // Use oneshot channel to wait for connection result before returning
@@ -411,13 +452,21 @@ impl VncServer {
                             let receiver = DirtyRegionReceiver::new(Arc::downgrade(&regions_arc));
                             framebuffer.register_receiver(receiver).await;
 
+                            // Store the write stream handle for direct socket shutdown
+                            let write_stream_handle = {
+                                let client = client_arc.read().await;
+                                client.get_write_stream_handle()
+                            };
+                            client_write_streams.write().await.push(write_stream_handle);
+
                             clients.write().await.push(client_arc.clone());
+                            client_ids.write().await.push(client_id);
 
                             let _ = server_event_tx.send(ServerEvent::ClientConnected { client_id });
 
                             // Spawn task to handle client messages
                             let client_arc_clone = client_arc.clone();
-                            tokio::spawn(async move {
+                            let msg_handle = tokio::spawn(async move {
                                 let result = {
                                     let mut client = client_arc_clone.write().await;
                                     client.handle_messages().await
@@ -426,6 +475,9 @@ impl VncServer {
                                     error!("Reverse client {} message handling error: {}", client_id, e);
                                 }
                             });
+
+                            // Store the message handler task handle
+                            client_tasks.write().await.push(msg_handle);
 
                             // Handle client events
                             while let Some(event) = client_event_rx.recv().await {
@@ -457,6 +509,11 @@ impl VncServer {
                             // Remove client from list
                             let mut clients_guard = clients.write().await;
                             clients_guard.retain(|c| !Arc::ptr_eq(c, &client_arc));
+                            drop(clients_guard);
+
+                            let mut client_ids_guard = client_ids.write().await;
+                            client_ids_guard.retain(|&id| id != client_id);
+                            drop(client_ids_guard);
 
                             let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
@@ -522,6 +579,9 @@ impl VncServer {
         let desktop_name = self.desktop_name.clone();
         let password = self.password.clone();
         let clients = self.clients.clone();
+        let client_write_streams = self.client_write_streams.clone();
+        let client_tasks = self.client_tasks.clone();
+        let client_ids = self.client_ids.clone();
         let server_event_tx = self.event_tx.clone();
 
         // Use oneshot channel to wait for connection result before returning
@@ -558,14 +618,22 @@ impl VncServer {
                     let receiver = DirtyRegionReceiver::new(Arc::downgrade(&regions_arc));
                     framebuffer.register_receiver(receiver).await;
 
+                    // Store the write stream handle for direct socket shutdown
+                    let write_stream_handle = {
+                        let client = client_arc.read().await;
+                        client.get_write_stream_handle()
+                    };
+                    client_write_streams.write().await.push(write_stream_handle);
+
                     clients.write().await.push(client_arc.clone());
+                    client_ids.write().await.push(client_id);
 
                     let _ = server_event_tx.send(ServerEvent::ClientConnected { client_id });
 
                     // Spawn task to handle client messages
                     // Note: Same write lock behavior as regular clients (see handle_client)
                     let client_arc_clone = client_arc.clone();
-                    tokio::spawn(async move {
+                    let msg_handle = tokio::spawn(async move {
                         let result = {
                             let mut client = client_arc_clone.write().await;
                             client.handle_messages().await
@@ -574,6 +642,9 @@ impl VncServer {
                             error!("Repeater client {} message handling error: {}", client_id, e);
                         }
                     });
+
+                    // Store the message handler task handle
+                    client_tasks.write().await.push(msg_handle);
 
                     // Handle client events
                     while let Some(event) = client_event_rx.recv().await {
@@ -605,6 +676,11 @@ impl VncServer {
                     // Remove client from list
                     let mut clients_guard = clients.write().await;
                     clients_guard.retain(|c| !Arc::ptr_eq(c, &client_arc));
+                    drop(clients_guard);
+
+                    let mut client_ids_guard = client_ids.write().await;
+                    client_ids_guard.retain(|&id| id != client_id);
+                    drop(client_ids_guard);
 
                     let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
@@ -712,6 +788,89 @@ impl VncServer {
     /// `Ok(RwLockWriteGuard)` if the lock was acquired, `Err` if it would block.
     pub fn clients_try_write(&self) -> Result<tokio::sync::RwLockWriteGuard<Vec<Arc<RwLock<VncClient>>>>, tokio::sync::TryLockError> {
         self.clients.try_write()
+    }
+
+    /// Gets a snapshot of all connected client IDs without locking VncClient objects.
+    ///
+    /// This method is safe to call from JNI without risk of ANR because it only
+    /// locks the lightweight client_ids list, not the heavy VncClient objects.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Vec<usize>)` containing all active client IDs, or `Err` if lock cannot be acquired.
+    pub fn get_client_ids(&self) -> Result<Vec<usize>, tokio::sync::TryLockError> {
+        match self.client_ids.try_read() {
+            Ok(guard) => Ok(guard.clone()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Disconnects all connected clients.
+    ///
+    /// This method performs cleanup by:
+    /// 1. Aborting all client tasks
+    /// 2. Waiting for tasks to exit (drops task's Arc<VncClient>)
+    /// 3. Clearing client list (drops list's Arc<VncClient>, causing VncClient to drop and read half to close)
+    /// 4. Closing all write halves
+    ///
+    /// The caller should use a timeout wrapper to prevent blocking too long.
+    /// The caller is responsible for notifying Java-side components before calling this method.
+    pub async fn disconnect_all_clients(&self) {
+        use tokio::io::AsyncWriteExt;
+
+        // Get both tasks and write streams
+        let (tasks_to_abort, write_streams_to_close) = {
+            let mut tasks = self.client_tasks.write().await;
+            let mut streams = self.client_write_streams.write().await;
+            (std::mem::take(&mut *tasks), std::mem::take(&mut *streams))
+        };
+
+        let count = tasks_to_abort.len();
+        if count > 0 {
+            info!("Disconnecting {} client(s)", count);
+
+            // Step 1: Abort all tasks
+            info!("Aborting {} client task(s)", count);
+            for task in &tasks_to_abort {
+                task.abort();
+            }
+
+            // Step 2: Wait for tasks to exit (ensures task's Arc<VncClient> is dropped)
+            info!("Waiting for {} client task(s) to exit", count);
+            for task in tasks_to_abort {
+                let _ = task.await;
+            }
+            info!("All client tasks exited");
+
+            // Step 3: Clear client lists (drops last Arc<VncClient>, VncClient drops, read half closes)
+            info!("Clearing client list to drop VncClient objects");
+            {
+                let mut clients = self.clients.write().await;
+                clients.clear();
+            }
+            {
+                let mut client_ids = self.client_ids.write().await;
+                client_ids.clear();
+            }
+
+            // Step 4: Close all write halves (write half closes, TCP fully closed)
+            info!("Closing {} client write stream(s)", write_streams_to_close.len());
+            for write_stream_arc in write_streams_to_close {
+                let mut write_stream = write_stream_arc.lock().await;
+                let _ = write_stream.shutdown().await;
+            }
+        } else {
+            // No active tasks, but still clear lists
+            let mut clients = self.clients.write().await;
+            clients.clear();
+            drop(clients);
+
+            let mut client_ids = self.client_ids.write().await;
+            client_ids.clear();
+            drop(client_ids);
+        }
+
+        info!("All clients disconnected");
     }
 
     /// Schedules a copy rectangle operation for all connected clients (standard VNC protocol style).

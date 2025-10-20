@@ -198,8 +198,10 @@ impl TightStreamCompressor for TightZlibStreams {
 /// processing incoming client messages (e.g., key events, pointer events, pixel format requests),
 /// and managing client-specific settings like preferred encodings and JPEG quality.
 pub struct VncClient {
-    /// The underlying TCP stream for communication with the VNC client.
-    stream: TcpStream,
+    /// The read half of the TCP stream for receiving client messages.
+    read_stream: tokio::net::tcp::OwnedReadHalf,
+    /// The write half of the TCP stream for sending updates to the client.
+    write_stream: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
     /// A reference to the framebuffer, used to retrieve pixel data for updates.
     framebuffer: Framebuffer,
     /// The pixel format requested by the client, protected by a `RwLock` for concurrent access.
@@ -373,10 +375,14 @@ impl VncClient {
 
         info!("VNC client handshake completed");
 
+        // Split stream into read/write halves for lock-free shutdown
+        let (read_stream, write_stream) = stream.into_split();
+
         let creation_time = Instant::now();
 
         Ok(Self {
-            stream,
+            read_stream,
+            write_stream: Arc::new(tokio::sync::Mutex::new(write_stream)),
             framebuffer,
             pixel_format: RwLock::new(PixelFormat::rgba32()),
             encodings: RwLock::new(vec![ENCODING_RAW]),
@@ -482,7 +488,7 @@ impl VncClient {
         loop {
             tokio::select! {
                 // Handle incoming client messages
-                result = self.stream.read_buf(&mut buf) => {
+                result = self.read_stream.read_buf(&mut buf) => {
                     if result? == 0 {
                         let _ = self.event_tx.send(ClientEvent::Disconnected);
                         return Ok(());
@@ -1242,7 +1248,7 @@ impl VncClient {
 
         // Acquire send mutex to prevent interleaved writes
         let _lock = self.send_mutex.lock().await;
-        self.stream.write_all(&response).await?;
+        self.write_stream.lock().await.write_all(&response).await?;
         drop(_lock);
 
         // Reset deferral timer and update last sent time
@@ -1276,13 +1282,21 @@ impl VncClient {
 
         // Acquire send mutex to prevent interleaved writes
         let _lock = self.send_mutex.lock().await;
-        self.stream.write_all(&msg).await?;
+        self.write_stream.lock().await.write_all(&msg).await?;
         Ok(())
     }
 
     /// Returns the unique client ID assigned by the server.
     pub fn get_client_id(&self) -> usize {
         self.client_id
+    }
+
+    /// Returns a clone of the Arc containing the write half of the TCP stream.
+    ///
+    /// This allows external code to close the write half directly for shutdown,
+    /// which will cause reads on the read half to fail naturally.
+    pub fn get_write_stream_handle(&self) -> Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>> {
+        self.write_stream.clone()
     }
 
     /// Returns the remote host address of the connected client.
@@ -1311,5 +1325,11 @@ impl VncClient {
     pub fn set_repeater_metadata(&mut self, repeater_id: String, destination_port: Option<u16>) {
         self.repeater_id = Some(repeater_id);
         self.destination_port = destination_port;
+    }
+}
+
+impl Drop for VncClient {
+    fn drop(&mut self) {
+        log::info!("VncClient {} is being dropped (read half will close now)", self.client_id);
     }
 }
