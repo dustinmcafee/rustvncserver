@@ -142,8 +142,8 @@ impl TurboJpegEncoder {
                 0, // pitch = 0 means width * pixel_size
                 c_int::from(height),
                 TJPF_RGB,
-                &mut jpeg_buf,
-                &mut jpeg_size,
+                &raw mut jpeg_buf,
+                &raw mut jpeg_size,
                 TJSAMP_422, // 4:2:2 subsampling for good quality/size balance
                 c_int::from(quality),
                 0, // flags

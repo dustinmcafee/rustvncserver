@@ -71,14 +71,11 @@ pub fn encode_zlibhex_persistent(
 
     // Verify all input was consumed
     if consumed_len < hextile_data.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "ZlibHex: incomplete compression {}/{}",
-                consumed_len,
-                hextile_data.len()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "ZlibHex: incomplete compression {}/{}",
+            consumed_len,
+            hextile_data.len()
+        )));
     }
 
     // Build result: 4-byte big-endian length + compressed data

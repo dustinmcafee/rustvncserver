@@ -21,26 +21,44 @@ fn main() {
         return;
     }
 
-    // On macOS, turbojpeg is typically installed via Homebrew
-    // We need to add the Homebrew library path to the linker search path
-    if env::var("CARGO_CFG_TARGET_OS").unwrap() == "macos" {
-        // Try common Homebrew installation paths
-        let homebrew_paths = vec![
-            "/opt/homebrew/opt/jpeg-turbo/lib", // Apple Silicon (M1/M2/M3)
-            "/usr/local/opt/jpeg-turbo/lib",    // Intel Macs
-        ];
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
 
-        for path in homebrew_paths {
-            let path_buf = PathBuf::from(path);
-            if path_buf.exists() {
-                println!("cargo:rustc-link-search=native={}", path);
-                println!("cargo:rustc-link-lib=turbojpeg");
-                // Found the library, no need to check other paths
-                return;
+    match target_os.as_str() {
+        "macos" => {
+            // On macOS, turbojpeg is typically installed via Homebrew
+            // We need to add the Homebrew library path to the linker search path
+            let homebrew_paths = vec![
+                "/opt/homebrew/opt/jpeg-turbo/lib", // Apple Silicon (M1/M2/M3)
+                "/usr/local/opt/jpeg-turbo/lib",    // Intel Macs
+            ];
+
+            for path in homebrew_paths {
+                let path_buf = PathBuf::from(path);
+                if path_buf.exists() {
+                    println!("cargo:rustc-link-search=native={}", path);
+                    println!("cargo:rustc-link-lib=turbojpeg");
+                    // Found the library, no need to check other paths
+                    return;
+                }
             }
-        }
 
-        // If neither path exists, still try to link (might be in system path)
-        println!("cargo:rustc-link-lib=turbojpeg");
+            // If neither path exists, still try to link (might be in system path)
+            println!("cargo:rustc-link-lib=turbojpeg");
+        }
+        "linux" => {
+            // On Linux, turbojpeg is typically available via system package manager
+            // (libjpeg-turbo8-dev on Ubuntu/Debian)
+            // The library is usually in standard system paths, so we just need to link it
+            println!("cargo:rustc-link-lib=turbojpeg");
+        }
+        "windows" => {
+            // On Windows, turbojpeg linking is typically handled differently
+            // This is a placeholder for future Windows support
+            println!("cargo:rustc-link-lib=turbojpeg");
+        }
+        _ => {
+            // For other platforms, attempt standard linking
+            println!("cargo:rustc-link-lib=turbojpeg");
+        }
     }
 }

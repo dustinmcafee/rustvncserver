@@ -433,10 +433,7 @@ impl VncServer {
         // Safely increment client ID counter and check for overflow
         let client_id_raw = NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst);
         if client_id_raw == 0 || client_id_raw >= u64::MAX - 1000 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Client ID counter overflow",
-            ));
+            return Err(std::io::Error::other("Client ID counter overflow"));
         }
         let client_id = client_id_raw as usize;
 
@@ -585,8 +582,7 @@ impl VncServer {
         match result_rx.await {
             Ok(Ok(())) => Ok(client_id),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Err(_) => Err(std::io::Error::other(
                 "Reverse connection task died unexpectedly",
             )),
         }
@@ -629,10 +625,7 @@ impl VncServer {
         // Safely increment client ID counter and check for overflow
         let client_id_raw = NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst);
         if client_id_raw == 0 || client_id_raw >= u64::MAX - 1000 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Client ID counter overflow",
-            ));
+            return Err(std::io::Error::other("Client ID counter overflow"));
         }
         let client_id = client_id_raw as usize;
 
@@ -761,8 +754,7 @@ impl VncServer {
         match result_rx.await {
             Ok(Ok(())) => Ok(client_id),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Err(_) => Err(std::io::Error::other(
                 "Repeater connection task died unexpectedly",
             )),
         }
@@ -845,8 +837,10 @@ impl VncServer {
     /// Returns `Err(TryLockError)` if the lock could not be acquired immediately.
     pub fn clients_try_read(
         &self,
-    ) -> Result<tokio::sync::RwLockReadGuard<Vec<Arc<RwLock<VncClient>>>>, tokio::sync::TryLockError>
-    {
+    ) -> Result<
+        tokio::sync::RwLockReadGuard<'_, Vec<Arc<RwLock<VncClient>>>>,
+        tokio::sync::TryLockError,
+    > {
         self.clients.try_read()
     }
 
@@ -864,8 +858,10 @@ impl VncServer {
     /// Returns `Err(TryLockError)` if the lock could not be acquired immediately.
     pub fn clients_try_write(
         &self,
-    ) -> Result<tokio::sync::RwLockWriteGuard<Vec<Arc<RwLock<VncClient>>>>, tokio::sync::TryLockError>
-    {
+    ) -> Result<
+        tokio::sync::RwLockWriteGuard<'_, Vec<Arc<RwLock<VncClient>>>>,
+        tokio::sync::TryLockError,
+    > {
         self.clients.try_write()
     }
 

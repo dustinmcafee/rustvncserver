@@ -66,14 +66,11 @@ pub fn encode_zlib_persistent(data: &[u8], compressor: &mut Compress) -> io::Res
 
     // Verify all input was consumed
     if total_consumed < pixel_data.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Zlib: incomplete compression {}/{}",
-                total_consumed,
-                pixel_data.len()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "Zlib: incomplete compression {}/{}",
+            total_consumed,
+            pixel_data.len()
+        )));
     }
 
     // Build result: 4-byte big-endian length + compressed data
