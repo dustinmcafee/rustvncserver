@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
-//! FFI bindings to libjpeg-turbo's TurboJPEG API.
+//! FFI bindings to libjpeg-turbo's `TurboJPEG` API.
 //!
-//! This module provides a safe Rust wrapper around the TurboJPEG C API
+//! This module provides a safe Rust wrapper around the `TurboJPEG` C API
 //! for high-performance JPEG compression.
 
 use std::ffi::c_void;
@@ -81,13 +80,13 @@ extern "C" {
     fn tjGetErrorStr2(handle: TjHandle) -> *const c_char;
 }
 
-/// Safe Rust wrapper for TurboJPEG compression.
+/// Safe Rust wrapper for `TurboJPEG` compression.
 pub struct TurboJpegEncoder {
     handle: TjHandle,
 }
 
 impl TurboJpegEncoder {
-    /// Creates a new TurboJPEG encoder.
+    /// Creates a new `TurboJPEG` encoder.
     pub fn new() -> Result<Self, String> {
         let handle = unsafe { tjInitCompress() };
         if handle.is_null() {
@@ -129,21 +128,21 @@ impl TurboJpegEncoder {
             tjCompress2(
                 self.handle,
                 rgb_data.as_ptr(),
-                width as c_int,
+                c_int::from(width),
                 0, // pitch = 0 means width * pixel_size
-                height as c_int,
+                c_int::from(height),
                 TJPF_RGB,
                 &mut jpeg_buf,
                 &mut jpeg_size,
                 TJSAMP_422, // 4:2:2 subsampling for good quality/size balance
-                quality as c_int,
+                c_int::from(quality),
                 0, // flags
             )
         };
 
         if result != 0 {
             let error_msg = self.get_error_string();
-            return Err(format!("TurboJPEG compression failed: {}", error_msg));
+            return Err(format!("TurboJPEG compression failed: {error_msg}"));
         }
 
         if jpeg_buf.is_null() {
@@ -151,9 +150,8 @@ impl TurboJpegEncoder {
         }
 
         // Copy JPEG data to Rust Vec
-        let jpeg_data = unsafe {
-            std::slice::from_raw_parts(jpeg_buf, jpeg_size as usize).to_vec()
-        };
+        let jpeg_data =
+            unsafe { std::slice::from_raw_parts(jpeg_buf, jpeg_size as usize).to_vec() };
 
         // Free TurboJPEG buffer
         unsafe {
@@ -163,7 +161,7 @@ impl TurboJpegEncoder {
         Ok(jpeg_data)
     }
 
-    /// Gets the last error message from TurboJPEG.
+    /// Gets the last error message from `TurboJPEG`.
     fn get_error_string(&self) -> String {
         unsafe {
             let c_str = tjGetErrorStr2(self.handle);
@@ -202,10 +200,7 @@ mod tests {
         let mut encoder = TurboJpegEncoder::new().unwrap();
 
         // Create a simple 2x2 red image
-        let rgb_data = vec![
-            255, 0, 0, 255, 0, 0,
-            255, 0, 0, 255, 0, 0,
-        ];
+        let rgb_data = vec![255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0];
 
         let result = encoder.compress_rgb(&rgb_data, 2, 2, 90);
         assert!(result.is_ok());

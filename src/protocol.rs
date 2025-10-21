@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC Remote Framebuffer (RFB) protocol constants and structures.
 //!
 //! This module provides the fundamental building blocks for VNC protocol communication,
@@ -139,13 +138,13 @@ pub const ENCODING_ZLIB: i32 = 6;
 /// and other compression methods for different types of screen content.
 pub const ENCODING_TIGHT: i32 = 7;
 
-/// Encoding type: TightPng.
+/// Encoding type: `TightPng`.
 ///
 /// Like Tight encoding but uses PNG compression instead of JPEG.
 /// Provides lossless compression for high-quality image transmission.
 pub const ENCODING_TIGHTPNG: i32 = -260;
 
-/// Encoding type: ZlibHex.
+/// Encoding type: `ZlibHex`.
 ///
 /// Zlib-compressed Hextile encoding. Combines Hextile's tile-based encoding
 /// with zlib compression for improved bandwidth efficiency.
@@ -177,7 +176,7 @@ pub const ENCODING_ZYWRLE: i32 = 17;
 /// standard VNC protocol removed H.264 support in v0.9.11 (2016) due to it being
 /// broken and unmaintained. This constant exists for protocol compatibility only.
 #[allow(dead_code)]
-pub const ENCODING_H264: i32 = 0x48323634;
+pub const ENCODING_H264: i32 = 0x4832_3634;
 
 /// Pseudo-encoding: Rich Cursor.
 ///
@@ -304,6 +303,7 @@ impl PixelFormat {
     /// # Returns
     ///
     /// A `PixelFormat` instance configured for 32-bit RGBA.
+    #[must_use]
     pub fn rgba32() -> Self {
         Self {
             bits_per_pixel: 32,
@@ -324,7 +324,7 @@ impl PixelFormat {
     /// # Returns
     ///
     /// `true` if the pixel format matches 32-bit RGBA, `false` otherwise.
-    pub fn is_compatible_with_rgba32(&self) -> bool {
+    #[must_use] pub fn is_compatible_with_rgba32(&self) -> bool {
         self.bits_per_pixel == 32
             && self.depth == 24
             && self.big_endian_flag == 0
@@ -345,7 +345,7 @@ impl PixelFormat {
     /// # Returns
     ///
     /// `true` if the format is valid and supported, `false` otherwise.
-    pub fn is_valid(&self) -> bool {
+    #[must_use] pub fn is_valid(&self) -> bool {
         // Check bits per pixel is valid
         if self.bits_per_pixel != 8
             && self.bits_per_pixel != 16
@@ -403,15 +403,15 @@ impl PixelFormat {
     ///
     /// A `PixelFormat` instance configured for 16-bit RGB565.
     #[allow(dead_code)]
-    pub fn rgb565() -> Self {
+    #[must_use] pub fn rgb565() -> Self {
         Self {
             bits_per_pixel: 16,
             depth: 16,
             big_endian_flag: 0,
             true_colour_flag: 1,
-            red_max: 31,    // 5 bits
-            green_max: 63,  // 6 bits
-            blue_max: 31,   // 5 bits
+            red_max: 31,   // 5 bits
+            green_max: 63, // 6 bits
+            blue_max: 31,  // 5 bits
             red_shift: 11,
             green_shift: 5,
             blue_shift: 0,
@@ -426,15 +426,15 @@ impl PixelFormat {
     ///
     /// A `PixelFormat` instance configured for 16-bit RGB555.
     #[allow(dead_code)]
-    pub fn rgb555() -> Self {
+    #[must_use] pub fn rgb555() -> Self {
         Self {
             bits_per_pixel: 16,
             depth: 15,
             big_endian_flag: 0,
             true_colour_flag: 1,
-            red_max: 31,    // 5 bits
-            green_max: 31,  // 5 bits
-            blue_max: 31,   // 5 bits
+            red_max: 31,   // 5 bits
+            green_max: 31, // 5 bits
+            blue_max: 31,  // 5 bits
             red_shift: 10,
             green_shift: 5,
             blue_shift: 0,
@@ -450,15 +450,15 @@ impl PixelFormat {
     ///
     /// A `PixelFormat` instance configured for 8-bit BGR233.
     #[allow(dead_code)]
-    pub fn bgr233() -> Self {
+    #[must_use] pub fn bgr233() -> Self {
         Self {
             bits_per_pixel: 8,
             depth: 8,
             big_endian_flag: 0,
             true_colour_flag: 1,
-            red_max: 7,     // 3 bits
-            green_max: 7,   // 3 bits
-            blue_max: 3,    // 2 bits
+            red_max: 7,   // 3 bits
+            green_max: 7, // 3 bits
+            blue_max: 3,  // 2 bits
             red_shift: 0,
             green_shift: 3,
             blue_shift: 6,

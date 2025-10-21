@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC authentication implementation.
 //!
 //! This module implements VNC Authentication (security type 2) as specified in RFC 6143 Section 7.2.2.

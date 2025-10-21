@@ -12,19 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
-//! VNC ZlibHex encoding implementation.
+//! VNC `ZlibHex` encoding implementation.
 //!
-//! ZlibHex combines Hextile encoding with zlib compression for improved
+//! `ZlibHex` combines Hextile encoding with zlib compression for improved
 //! bandwidth efficiency while maintaining the tile-based structure.
 
+use super::Encoding;
+use super::HextileEncoding;
 use bytes::{BufMut, BytesMut};
 use flate2::{Compress, FlushCompress};
 use std::io;
-use super::HextileEncoding;
-use super::Encoding;
 
-/// Encodes pixel data using ZlibHex with a persistent compressor (RFC 6143 compliant).
+/// Encodes pixel data using `ZlibHex` with a persistent compressor (RFC 6143 compliant).
 ///
 /// This encoding first applies Hextile encoding to the pixel data, then compresses
 /// the result using zlib. The compressor maintains state across rectangles for better
@@ -59,11 +58,7 @@ pub fn encode_zlibhex_persistent(
     let previous_out = compressor.total_out();
 
     // Single deflate() call with Z_SYNC_FLUSH (RFC 6143 Section 7.7.2)
-    compressor.compress(
-        &hextile_data,
-        &mut compressed_output,
-        FlushCompress::Sync
-    )?;
+    compressor.compress(&hextile_data, &mut compressed_output, FlushCompress::Sync)?;
 
     // Calculate actual compressed length
     let compressed_len = (compressor.total_out() - previous_out) as usize;
@@ -73,7 +68,11 @@ pub fn encode_zlibhex_persistent(
     if consumed_len < hextile_data.len() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("ZlibHex: incomplete compression {}/{}", consumed_len, hextile_data.len())
+            format!(
+                "ZlibHex: incomplete compression {}/{}",
+                consumed_len,
+                hextile_data.len()
+            ),
         ));
     }
 

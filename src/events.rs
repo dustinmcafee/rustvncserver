@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! Server events that can be received by the application.
 
 use std::net::SocketAddr;

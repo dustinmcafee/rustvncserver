@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC framebuffer management and dirty region tracking.
 //!
 //! This module provides the core framebuffer functionality for the VNC server, including:
@@ -36,8 +35,8 @@
 //! 4. Clients merge and batch these regions for efficient transmission
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::sync::Weak;
+use tokio::sync::RwLock;
 
 /// Represents a rectangular region of the framebuffer that has been modified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +64,7 @@ impl DirtyRegion {
     /// # Returns
     ///
     /// A new `DirtyRegion` instance.
-    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+    #[must_use] pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
         Self {
             x,
             y,
@@ -84,7 +83,7 @@ impl DirtyRegion {
     /// # Returns
     ///
     /// A new `DirtyRegion` representing the union of the two regions.
-    pub fn merge(&self, other: &DirtyRegion) -> DirtyRegion {
+    #[must_use] pub fn merge(&self, other: &DirtyRegion) -> DirtyRegion {
         let x1 = self.x.min(other.x);
         let y1 = self.y.min(other.y);
         // Use saturating_add to prevent overflow
@@ -114,7 +113,7 @@ impl DirtyRegion {
     /// # Returns
     ///
     /// `true` if the regions intersect, `false` otherwise.
-    pub fn intersects(&self, other: &DirtyRegion) -> bool {
+    #[must_use] pub fn intersects(&self, other: &DirtyRegion) -> bool {
         let x1 = self.x.max(other.x);
         let y1 = self.y.max(other.y);
         // Use saturating_add to prevent overflow
@@ -144,7 +143,7 @@ impl DirtyRegion {
     ///
     /// An `Option<DirtyRegion>` which is `Some(DirtyRegion)` if they intersect,
     /// or `None` if they do not.
-    pub fn intersect(&self, other: &DirtyRegion) -> Option<DirtyRegion> {
+    #[must_use] pub fn intersect(&self, other: &DirtyRegion) -> Option<DirtyRegion> {
         let x1 = self.x.max(other.x);
         let y1 = self.y.max(other.y);
         // Use saturating_add to prevent overflow
@@ -190,7 +189,7 @@ impl DirtyRegionReceiver {
     /// # Returns
     ///
     /// A new `DirtyRegionReceiver` instance.
-    pub fn new(regions: Weak<RwLock<Vec<DirtyRegion>>>) -> Self {
+    #[must_use] pub fn new(regions: Weak<RwLock<Vec<DirtyRegion>>>) -> Self {
         Self { regions }
     }
 
@@ -205,6 +204,11 @@ impl DirtyRegionReceiver {
     ///
     /// * `region` - The `DirtyRegion` to add.
     pub async fn add_dirty_region(&self, region: DirtyRegion) {
+        // Limit number of regions and total pixel count to prevent memory exhaustion
+        // These limits ensure bounded memory usage even with rapid screen changes
+        const MAX_REGIONS: usize = 10;
+        const MAX_TOTAL_PIXELS: usize = 1920 * 1080 * 2; // Approximately 2 Full HD screens
+
         if let Some(regions_arc) = self.regions.upgrade() {
             let mut regions = regions_arc.write().await;
 
@@ -223,12 +227,8 @@ impl DirtyRegionReceiver {
             // Add the final merged region
             regions.push(merged_region);
 
-            // Limit number of regions and total pixel count to prevent memory exhaustion
-            // These limits ensure bounded memory usage even with rapid screen changes
-            const MAX_REGIONS: usize = 10;
-            const MAX_TOTAL_PIXELS: usize = 1920 * 1080 * 2; // Approximately 2 Full HD screens
-
-            let total_pixels: usize = regions.iter()
+            let total_pixels: usize = regions
+                .iter()
                 .map(|r| (r.width as usize) * (r.height as usize))
                 .sum();
 
@@ -277,7 +277,7 @@ impl Framebuffer {
     /// # Returns
     ///
     /// A new `Framebuffer` instance.
-    pub fn new(width: u16, height: u16) -> Self {
+    #[must_use] pub fn new(width: u16, height: u16) -> Self {
         let size = (width as usize) * (height as usize) * 4; // RGBA32
         Self {
             width: Arc::new(AtomicU16::new(width)),
@@ -331,7 +331,7 @@ impl Framebuffer {
 
         // Notify all receivers without holding receivers lock
         // This prevents deadlock if add_dirty_region acquires other locks
-        for receiver in receivers_copy.iter() {
+        for receiver in &receivers_copy {
             receiver.add_dirty_region(region).await;
         }
 
@@ -340,12 +340,12 @@ impl Framebuffer {
     }
 
     /// Returns the width of the framebuffer.
-    pub fn width(&self) -> u16 {
+    #[must_use] pub fn width(&self) -> u16 {
         self.width.load(AtomicOrdering::Relaxed)
     }
 
     /// Returns the height of the framebuffer.
-    pub fn height(&self) -> u16 {
+    #[must_use] pub fn height(&self) -> u16 {
         self.height.load(AtomicOrdering::Relaxed)
     }
 
@@ -362,7 +362,15 @@ impl Framebuffer {
     /// # Returns
     ///
     /// `Ok(())` if the update is successful.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(String)` if the provided data slice has an incorrect size.
+    ///
+    /// # Panics
+    ///
+    /// May panic if the framebuffer dimensions are invalid or if internal state is corrupted.
+    #[allow(clippy::cast_possible_truncation)] // Intentional: converting row indices to u16 coordinates
     pub async fn update_from_slice(&self, data: &[u8]) -> Result<(), String> {
         let expected_size = (self.width() as usize) * (self.height() as usize) * 4;
         if data.len() != expected_size {
@@ -392,10 +400,13 @@ impl Framebuffer {
             min_y = first_row as u16;
 
             // Since we know there's a change, the last changed row must exist
-            max_y = (min_y as usize..self.height() as usize).rev().find(|&y| {
-                let offset = y * row_bytes;
-                fb[offset..offset + row_bytes] != data[offset..offset + row_bytes]
-            }).unwrap() as u16;
+            max_y = (min_y as usize..self.height() as usize)
+                .rev()
+                .find(|&y| {
+                    let offset = y * row_bytes;
+                    fb[offset..offset + row_bytes] != data[offset..offset + row_bytes]
+                })
+                .unwrap() as u16;
 
             // Now find the exact horizontal bounds but only within the changed rows
             for y in min_y..=max_y {
@@ -438,13 +449,27 @@ impl Framebuffer {
     /// # Returns
     ///
     /// `Ok(Vec<u8>)` containing the pixel data for the requested rectangle.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(String)` if the requested rectangle is out of the framebuffer's bounds.
-    pub async fn get_rect(&self, x: u16, y: u16, width: u16, height: u16) -> Result<Vec<u8>, String> {
+    pub async fn get_rect(
+        &self,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+    ) -> Result<Vec<u8>, String> {
         // Bounds checking with overflow protection - return error instead of panic
         if x.saturating_add(width) > self.width() || y.saturating_add(height) > self.height() {
             return Err(format!(
                 "Rectangle out of bounds: ({}, {}, {}, {}) exceeds ({}, {})",
-                x, y, width, height, self.width(), self.height()
+                x,
+                y,
+                width,
+                height,
+                self.width(),
+                self.height()
             ));
         }
 
@@ -488,6 +513,9 @@ impl Framebuffer {
     /// # Returns
     ///
     /// `Ok(())` if the update is successful.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(String)` if the crop region is out of bounds or the data size is incorrect.
     pub async fn update_cropped(
         &self,
@@ -501,13 +529,17 @@ impl Framebuffer {
         if crop_x.saturating_add(crop_width) > self.width() {
             return Err(format!(
                 "Crop region exceeds framebuffer width: {}+{} > {}",
-                crop_x, crop_width, self.width()
+                crop_x,
+                crop_width,
+                self.width()
             ));
         }
         if crop_y.saturating_add(crop_height) > self.height() {
             return Err(format!(
                 "Crop region exceeds framebuffer height: {}+{} > {}",
-                crop_y, crop_height, self.height()
+                crop_y,
+                crop_height,
+                self.height()
             ));
         }
 
@@ -556,7 +588,6 @@ impl Framebuffer {
             }
         }
 
-
         if changed {
             let width = (max_x - min_x + 1).min(self.width() - min_x);
             let height = (max_y - min_y + 1).min(self.height() - min_y);
@@ -574,11 +605,11 @@ impl Framebuffer {
     /// Detects copy operations by comparing current framebuffer with previous state.
     ///
     /// This method identifies if a dirty region's content matches a region from the previous
-    /// framebuffer state at a different location. This enables the use of CopyRect encoding,
+    /// framebuffer state at a different location. This enables the use of `CopyRect` encoding,
     /// which dramatically reduces bandwidth for scrolling and window dragging operations.
     ///
-    /// NOTE: This auto-detection method is no longer used. CopyRect now uses explicit
-    /// tracking via schedule_copy_region() and do_copy_region(), matching standard VNC protocol's approach.
+    /// NOTE: This auto-detection method is no longer used. `CopyRect` now uses explicit
+    /// tracking via `schedule_copy_region()` and `do_copy_region()`, matching standard VNC protocol's approach.
     ///
     /// # Arguments
     ///
@@ -590,6 +621,8 @@ impl Framebuffer {
     /// previous framebuffer, where `(src_x, src_y)` are the source coordinates.
     /// Returns `None` if no match is found or the region is too small for copy detection.
     #[allow(dead_code)]
+    #[allow(clippy::cast_possible_truncation)] // Intentional: i32 to u16 coordinate conversion with bounds checks
+    #[allow(clippy::cast_sign_loss)] // Intentional: i32 to usize for array indexing after bounds checks
     pub async fn detect_copy_rect(&self, region: &DirtyRegion) -> Option<(u16, u16)> {
         // Don't detect copy for very small regions (not worth the CPU cost)
         const MIN_COPY_SIZE: u16 = 64;
@@ -657,8 +690,8 @@ impl Framebuffer {
         ];
 
         for (dx, dy) in search_offsets {
-            let src_x = region.x as i32 + dx;
-            let src_y = region.y as i32 + dy;
+            let src_x = i32::from(region.x) + dx;
+            let src_y = i32::from(region.y) + dy;
 
             // Check if source is within bounds
             if src_x < 0
@@ -672,7 +705,8 @@ impl Framebuffer {
             // Compare current region with previous framebuffer at offset
             let mut matches = true;
             let sample_rows = (region.height / 4).max(1); // Sample 25% of rows for performance
-            let step_size = ((region.height as usize).max(1) / (sample_rows as usize).max(1)).max(1);
+            let step_size =
+                ((region.height as usize).max(1) / (sample_rows as usize).max(1)).max(1);
 
             for row_idx in (0..region.height).step_by(step_size) {
                 let src_row = (src_y as u16) + row_idx;
@@ -682,7 +716,8 @@ impl Framebuffer {
                 let current_row_end = current_row_start + (region.width as usize) * 4;
 
                 // Calculate offset in prev_full_data
-                let prev_row_start = ((src_row as usize) * (self.width() as usize) + (src_x as usize)) * 4;
+                let prev_row_start =
+                    ((src_row as usize) * (self.width() as usize) + (src_x as usize)) * 4;
                 let prev_row_end = prev_row_start + (region.width as usize) * 4;
 
                 // Bounds check for prev_full_data
@@ -728,7 +763,7 @@ impl Framebuffer {
     ///
     /// This is equivalent to standard VNC protocol's `rfbNewFramebuffer` function.
     ///
-    /// Note: This method uses interior mutability through RwLock, so it doesn't require `&mut self`.
+    /// Note: This method uses interior mutability through `RwLock`, so it doesn't require `&mut self`.
     /// The width and height fields themselves cannot be updated atomically with the data,
     /// so there's a brief window where they may be inconsistent. However, since this is called
     /// infrequently (only on screen rotation/resize), this is acceptable.
@@ -751,8 +786,7 @@ impl Framebuffer {
         const MAX_DIMENSION: u16 = 8192;
         if new_width > MAX_DIMENSION || new_height > MAX_DIMENSION {
             return Err(format!(
-                "Framebuffer dimensions too large: {}x{} (max: {})",
-                new_width, new_height, MAX_DIMENSION
+                "Framebuffer dimensions too large: {new_width}x{new_height} (max: {MAX_DIMENSION})"
             ));
         }
 
@@ -820,8 +854,8 @@ impl Framebuffer {
     /// * `dest_y` - The Y coordinate of the destination rectangle.
     /// * `width` - The width of the rectangle to copy.
     /// * `height` - The height of the rectangle to copy.
-    /// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
-    /// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+    /// * `dx` - The X offset from destination to source (`src_x` = `dest_x` + dx).
+    /// * `dy` - The Y offset from destination to source (`src_y` = `dest_y` + dy).
     ///
     /// # Returns
     ///
@@ -837,8 +871,8 @@ impl Framebuffer {
         dy: i16,
     ) -> Result<(), String> {
         // Calculate source coordinates
-        let src_x = (dest_x as i32 + dx as i32) as u16;
-        let src_y = (dest_y as i32 + dy as i32) as u16;
+        let src_x = (i32::from(dest_x) + i32::from(dx)) as u16;
+        let src_y = (i32::from(dest_y) + i32::from(dy)) as u16;
 
         // Validate bounds
         if dest_x.saturating_add(width) > self.width()
@@ -855,7 +889,8 @@ impl Framebuffer {
             ));
         }
 
-        if src_x.saturating_add(width) > self.width() || src_y.saturating_add(height) > self.height()
+        if src_x.saturating_add(width) > self.width()
+            || src_y.saturating_add(height) > self.height()
         {
             return Err(format!(
                 "Source rectangle out of bounds: ({}, {}, {}, {}) exceeds ({}, {})",
@@ -878,10 +913,8 @@ impl Framebuffer {
         if dy < 0 {
             // Copy top to bottom (forward)
             for row in 0..height {
-                let src_offset =
-                    ((src_y + row) as usize * fb_width + src_x as usize) * 4;
-                let dest_offset =
-                    ((dest_y + row) as usize * fb_width + dest_x as usize) * 4;
+                let src_offset = ((src_y + row) as usize * fb_width + src_x as usize) * 4;
+                let dest_offset = ((dest_y + row) as usize * fb_width + dest_x as usize) * 4;
 
                 // Use copy_within for safe overlapping copies
                 data.copy_within(src_offset..src_offset + row_bytes, dest_offset);
@@ -889,10 +922,8 @@ impl Framebuffer {
         } else {
             // Copy bottom to top (reverse)
             for row in (0..height).rev() {
-                let src_offset =
-                    ((src_y + row) as usize * fb_width + src_x as usize) * 4;
-                let dest_offset =
-                    ((dest_y + row) as usize * fb_width + dest_x as usize) * 4;
+                let src_offset = ((src_y + row) as usize * fb_width + src_x as usize) * 4;
+                let dest_offset = ((dest_y + row) as usize * fb_width + dest_x as usize) * 4;
 
                 // Use copy_within for safe overlapping copies
                 data.copy_within(src_offset..src_offset + row_bytes, dest_offset);

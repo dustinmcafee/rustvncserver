@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! Simple VNC server example.
 //!
 //! This example creates a VNC server with a static test pattern.
@@ -39,7 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         800,
         600,
         "RustVNC Example".to_string(),
-        Some("test123".to_string())
+        Some("test123".to_string()),
     );
 
     // Create a test pattern (gradient)
@@ -47,15 +46,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for y in 0..600 {
         for x in 0..800 {
             let offset = (y * 800 + x) * 4;
-            pixels[offset] = (x * 255 / 800) as u8;     // R: horizontal gradient
+            pixels[offset] = (x * 255 / 800) as u8; // R: horizontal gradient
             pixels[offset + 1] = (y * 255 / 600) as u8; // G: vertical gradient
-            pixels[offset + 2] = 128;                   // B: constant
-            pixels[offset + 3] = 255;                   // A: opaque
+            pixels[offset + 2] = 128; // B: constant
+            pixels[offset + 3] = 255; // A: opaque
         }
     }
 
     // Update framebuffer with test pattern
-    server.framebuffer().update_cropped(&pixels, 0, 0, 800, 600).await.expect("Failed to update framebuffer");
+    server
+        .framebuffer()
+        .update_cropped(&pixels, 0, 0, 800, 600)
+        .await
+        .expect("Failed to update framebuffer");
 
     println!("Framebuffer updated with test pattern");
     println!("Server ready for connections");
