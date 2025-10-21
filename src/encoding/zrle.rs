@@ -197,6 +197,7 @@ pub fn encode_zrle(
 
 /// Encodes a single tile, choosing the best sub-encoding.
 /// Optimized to minimize allocations by working directly with RGBA data where possible.
+#[allow(clippy::cast_possible_truncation)] // ZRLE palette indices and run lengths limited to u8 per RFC 6143
 fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize) {
     // Quick check for solid color by scanning RGBA data directly (avoid allocation)
     if tile_data.len() >= 4 {
@@ -299,6 +300,7 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
 
 /// Extracts a tile from the full framebuffer.
 /// Optimized to use a single allocation and bulk copy operations.
+#[allow(clippy::uninit_vec)] // Performance optimization: all bytes written via bulk copy before return
 fn extract_tile(
     full_frame: &[u8],
     frame_width: usize,
@@ -358,6 +360,7 @@ fn encode_raw_tile(buf: &mut BytesMut, tile_data: &[u8]) {
 }
 
 /// Sub-encoding for a tile with a small palette.
+#[allow(clippy::cast_possible_truncation)] // ZRLE palette size limited to 16 colors (u8) per RFC 6143
 fn encode_packed_palette_tile(
     buf: &mut BytesMut,
     pixels: &[u32],
@@ -410,6 +413,7 @@ fn encode_packed_palette_tile(
 }
 
 /// Sub-encoding for a tile with a small palette and RLE.
+#[allow(clippy::cast_possible_truncation)] // ZRLE palette size limited to 16 colors (u8) per RFC 6143
 fn encode_packed_palette_rle_tile(
     buf: &mut BytesMut,
     pixels: &[u32],
@@ -458,6 +462,7 @@ fn encode_packed_palette_rle_tile(
 }
 
 /// Encodes pixel data using run-length encoding directly to buffer (optimized).
+#[allow(clippy::cast_possible_truncation)] // ZRLE run lengths encoded as u8 per RFC 6143
 fn encode_rle_to_buf(buf: &mut BytesMut, pixels: &[u32]) {
     let mut i = 0;
     while i < pixels.len() {

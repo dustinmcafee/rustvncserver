@@ -121,6 +121,7 @@ const ZYWRLE_PARAM: [[[usize; 3]; 3]; 3] = [
 /// * `x0` - First coefficient (modified in place to contain Low component)
 /// * `x1` - Second coefficient (modified in place to contain High component)
 #[inline]
+#[allow(clippy::cast_possible_truncation)] // Piecewise-Linear Haar transform uses i32 math, results fit in i8
 fn harr(x0: &mut i8, x1: &mut i8) {
     let orig_x0 = i32::from(*x0);
     let orig_x1 = i32::from(*x1);
@@ -230,6 +231,7 @@ fn wavelet(buf: &mut [i32], width: usize, height: usize, level: usize) {
 /// This function contains bounds checks in nested loops which add ~2-3% overhead.
 /// The checks are necessary for safety but could be optimized with `debug_assert`!
 /// and unsafe indexing if profiling shows this as a bottleneck.
+#[allow(clippy::cast_sign_loss)] // Quantization filter applies i8 lookup table to u8 bytes
 fn filter_wavelet_square(buf: &mut [i32], width: usize, height: usize, level: usize, l: usize) {
     let param = &ZYWRLE_PARAM[level - 1][l];
     let s = 2 << l;
@@ -278,6 +280,7 @@ fn filter_wavelet_square(buf: &mut [i32], width: usize, height: usize, level: us
 /// * `width` - Image width
 /// * `height` - Image height
 #[allow(clippy::many_single_char_names)] // r, g, b, y, u, v are standard color component names
+#[allow(clippy::cast_sign_loss)] // RCT transform stores signed YUV as unsigned bytes in i32
 fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
     let mut buf_idx = 0;
     let mut data_idx = 0;
@@ -406,6 +409,7 @@ fn pack_coeff(buf: &[i32], dst: &mut [u8], r: usize, width: usize, height: usize
 ///
 /// # Returns
 /// Transformed pixel data ready for ZRLE encoding, or None if dimensions too small
+#[allow(clippy::uninit_vec)] // Performance optimization: all bytes written before return (see SAFETY comment)
 pub fn zywrle_analyze(
     src: &[u8],
     width: usize,
