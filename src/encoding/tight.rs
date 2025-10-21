@@ -1056,7 +1056,12 @@ pub trait TightStreamCompressor {
     /// * `input` - Data to compress
     ///
     /// # Returns
+    ///
     /// Compressed data or error message
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if compression fails
     fn compress_tight_stream(
         &mut self,
         stream_id: u8,

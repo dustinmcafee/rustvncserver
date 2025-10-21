@@ -86,7 +86,12 @@ fn analyze_runs_and_palette(pixels: &[u32]) -> (usize, usize, Vec<u32>) {
 
 /// Encodes a rectangle of pixel data using ZRLE with a persistent compressor.
 /// This maintains compression state across rectangles as required by RFC 6143.
+///
+/// # Errors
+///
+/// Returns an error if zlib compression fails
 #[allow(dead_code)]
+#[allow(clippy::cast_possible_truncation)] // ZRLE protocol requires u8/u16/u32 packing of pixel data
 pub fn encode_zrle_persistent(
     data: &[u8],
     width: u16,
@@ -142,6 +147,11 @@ pub fn encode_zrle_persistent(
 
 /// Encodes a rectangle of pixel data using the ZRLE encoding.
 /// This creates a new compressor for each rectangle (non-RFC compliant, deprecated).
+///
+/// # Errors
+///
+/// Returns an error if zlib compression fails
+#[allow(clippy::cast_possible_truncation)] // ZRLE protocol requires u8/u16/u32 packing of pixel data
 pub fn encode_zrle(
     data: &[u8],
     width: u16,

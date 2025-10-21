@@ -36,8 +36,12 @@ use std::io;
 /// * `compressor` - Persistent zlib compressor maintaining state across rectangles
 ///
 /// # Returns
-/// * `Ok(Vec<u8>)` - 4-byte length header + compressed Hextile data
-/// * `Err` - Compression error
+///
+/// 4-byte length header + compressed Hextile data
+///
+/// # Errors
+///
+/// Returns an error if zlib compression fails
 pub fn encode_zlibhex_persistent(
     data: &[u8],
     width: u16,

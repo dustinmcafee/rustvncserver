@@ -87,6 +87,10 @@ pub struct TurboJpegEncoder {
 
 impl TurboJpegEncoder {
     /// Creates a new `TurboJPEG` encoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TurboJPEG initialization fails
     pub fn new() -> Result<Self, String> {
         let handle = unsafe { tjInitCompress() };
         if handle.is_null() {
@@ -104,7 +108,13 @@ impl TurboJpegEncoder {
     /// * `quality` - JPEG quality (1-100, where 100 is best quality)
     ///
     /// # Returns
+    ///
     /// JPEG-compressed data as a `Vec<u8>`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data size is invalid or JPEG compression fails
+    #[allow(clippy::cast_possible_truncation)] // JPEG dimensions limited to u16 range
     pub fn compress_rgb(
         &mut self,
         rgb_data: &[u8],

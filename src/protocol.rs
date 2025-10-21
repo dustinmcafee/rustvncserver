@@ -497,6 +497,9 @@ impl PixelFormat {
     /// # Returns
     ///
     /// `Ok(Self)` containing the parsed `PixelFormat`.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(io::Error)` if there are not enough bytes in the buffer
     /// to read a complete `PixelFormat`.
     pub fn from_bytes(buf: &mut BytesMut) -> io::Result<Self> {

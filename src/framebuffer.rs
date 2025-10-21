@@ -776,6 +776,9 @@ impl Framebuffer {
     /// # Returns
     ///
     /// `Ok(())` if the resize is successful.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(String)` if the new dimensions are invalid (zero or too large).
     pub async fn resize(&self, new_width: u16, new_height: u16) -> Result<(), String> {
         // Validate dimensions
@@ -860,7 +863,12 @@ impl Framebuffer {
     /// # Returns
     ///
     /// `Ok(())` if the copy is successful.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(String)` if the source or destination rectangle is out of bounds.
+    #[allow(clippy::cast_possible_truncation)] // Region dimensions are u16, indexing math uses i32 for signed offsets
+    #[allow(clippy::cast_sign_loss)] // Bounds-checked conversion from i32 to usize
     pub async fn do_copy_region(
         &self,
         dest_x: u16,

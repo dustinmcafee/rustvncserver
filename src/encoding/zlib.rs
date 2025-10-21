@@ -30,8 +30,12 @@ use std::io;
 /// * `compressor` - Persistent zlib compressor maintaining state across rectangles
 ///
 /// # Returns
-/// * `Ok(Vec<u8>)` - 4-byte length header + compressed data
-/// * `Err` - Compression error
+///
+/// 4-byte length header + compressed data
+///
+/// # Errors
+///
+/// Returns an error if zlib compression fails
 pub fn encode_zlib_persistent(data: &[u8], compressor: &mut Compress) -> io::Result<Vec<u8>> {
     // Convert RGBA to RGBX (client pixel format for 32bpp)
     // R at byte 0, G at byte 1, B at byte 2, padding at byte 3

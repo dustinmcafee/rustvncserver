@@ -164,6 +164,9 @@ impl VncServer {
     /// # Returns
     ///
     /// `Ok(())` if the server starts successfully and listens indefinitely.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(std::io::Error)` if there is an issue binding to the port or accepting connections.
     pub async fn listen(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
@@ -384,6 +387,9 @@ impl VncServer {
     /// # Returns
     ///
     /// `Ok(())` if the text is successfully queued for sending to all clients.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(std::io::Error)` if an error occurs during the sending process to any client.
     pub async fn send_cut_text_to_all(&self, text: String) -> Result<(), std::io::Error> {
         // Clone the client list before iterating to avoid holding read lock
@@ -833,7 +839,11 @@ impl VncServer {
     ///
     /// # Returns
     ///
-    /// `Ok(RwLockReadGuard)` if the lock was acquired, `Err` if it would block.
+    /// `Ok(RwLockReadGuard)` if the lock was acquired.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(TryLockError)` if the lock could not be acquired immediately.
     pub fn clients_try_read(
         &self,
     ) -> Result<tokio::sync::RwLockReadGuard<Vec<Arc<RwLock<VncClient>>>>, tokio::sync::TryLockError>
@@ -848,7 +858,11 @@ impl VncServer {
     ///
     /// # Returns
     ///
-    /// `Ok(RwLockWriteGuard)` if the lock was acquired, `Err` if it would block.
+    /// `Ok(RwLockWriteGuard)` if the lock was acquired.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(TryLockError)` if the lock could not be acquired immediately.
     pub fn clients_try_write(
         &self,
     ) -> Result<tokio::sync::RwLockWriteGuard<Vec<Arc<RwLock<VncClient>>>>, tokio::sync::TryLockError>
@@ -863,7 +877,11 @@ impl VncServer {
     ///
     /// # Returns
     ///
-    /// `Ok(Vec<usize>)` containing all active client IDs, or `Err` if lock cannot be acquired.
+    /// `Ok(Vec<usize>)` containing all active client IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(TryLockError)` if the lock cannot be acquired.
     pub fn get_client_ids(&self) -> Result<Vec<usize>, tokio::sync::TryLockError> {
         match self.client_ids.try_read() {
             Ok(guard) => Ok(guard.clone()),
@@ -1014,6 +1032,9 @@ impl VncServer {
     /// # Returns
     ///
     /// `Ok(())` if the operation is successful.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(String)` if the rectangle is out of bounds.
     pub async fn do_copy_rect(
         &self,
