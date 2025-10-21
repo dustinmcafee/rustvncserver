@@ -72,6 +72,9 @@ jobs:
       with:
         components: clippy
 
+    - name: Install libjpeg-turbo
+      run: sudo apt-get update && sudo apt-get install -y libjpeg-turbo8-dev
+
     - name: Run clippy
       run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -97,6 +100,9 @@ jobs:
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+
+    - name: Install libjpeg-turbo
+      run: sudo apt-get update && sudo apt-get install -y libjpeg-turbo8-dev
 
     - name: Check documentation
       run: cargo doc --all-features --no-deps
