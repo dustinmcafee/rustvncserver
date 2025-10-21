@@ -43,3 +43,8 @@ path = "examples/headless_server.rs"
 lto = true              # Link-time optimization
 codegen-units = 1       # Better optimization
 opt-level = 3           # Maximum optimization
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "aarch64-unknown-linux-gnu"]

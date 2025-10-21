@@ -108,8 +108,9 @@
 //! └─────────────────────────────────────────┘
 //! ```
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![warn(clippy::all)]
+#![warn(clippy::pedantic)]
 
 pub mod error;
 pub mod events;

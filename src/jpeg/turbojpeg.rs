@@ -21,28 +21,40 @@
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_uchar, c_ulong};
 
-// TurboJPEG constants
-pub const TJPF_RGB: c_int = 0; // RGB pixel format
+// TurboJPEG pixel format constants
+/// RGB pixel format (red, green, blue)
+pub const TJPF_RGB: c_int = 0;
+/// BGR pixel format (blue, green, red)
 #[allow(dead_code)]
-pub const TJPF_BGR: c_int = 1; // BGR pixel format
+pub const TJPF_BGR: c_int = 1;
+/// RGBX pixel format (red, green, blue, unused)
 #[allow(dead_code)]
-pub const TJPF_RGBX: c_int = 2; // RGBX pixel format
+pub const TJPF_RGBX: c_int = 2;
+/// BGRX pixel format (blue, green, red, unused)
 #[allow(dead_code)]
-pub const TJPF_BGRX: c_int = 3; // BGRX pixel format
+pub const TJPF_BGRX: c_int = 3;
+/// XBGR pixel format (unused, blue, green, red)
 #[allow(dead_code)]
-pub const TJPF_XBGR: c_int = 4; // XBGR pixel format
+pub const TJPF_XBGR: c_int = 4;
+/// XRGB pixel format (unused, red, green, blue)
 #[allow(dead_code)]
-pub const TJPF_XRGB: c_int = 5; // XRGB pixel format
+pub const TJPF_XRGB: c_int = 5;
+/// Grayscale pixel format
 #[allow(dead_code)]
-pub const TJPF_GRAY: c_int = 6; // Grayscale pixel format
+pub const TJPF_GRAY: c_int = 6;
 
+// TurboJPEG chrominance subsampling constants
+/// 4:4:4 chrominance subsampling (no subsampling)
 #[allow(dead_code)]
-pub const TJSAMP_444: c_int = 0; // 4:4:4 chrominance subsampling
-pub const TJSAMP_422: c_int = 1; // 4:2:2 chrominance subsampling
+pub const TJSAMP_444: c_int = 0;
+/// 4:2:2 chrominance subsampling (2x1 subsampling)
+pub const TJSAMP_422: c_int = 1;
+/// 4:2:0 chrominance subsampling (2x2 subsampling)
 #[allow(dead_code)]
-pub const TJSAMP_420: c_int = 2; // 4:2:0 chrominance subsampling
+pub const TJSAMP_420: c_int = 2;
+/// Grayscale (no chrominance)
 #[allow(dead_code)]
-pub const TJSAMP_GRAY: c_int = 3; // Grayscale
+pub const TJSAMP_GRAY: c_int = 3;
 
 // Opaque TurboJPEG handle
 type TjHandle = *mut c_void;
@@ -92,7 +104,7 @@ impl TurboJpegEncoder {
     /// * `quality` - JPEG quality (1-100, where 100 is best quality)
     ///
     /// # Returns
-    /// JPEG-compressed data as a Vec<u8>
+    /// JPEG-compressed data as a `Vec<u8>`
     pub fn compress_rgb(
         &mut self,
         rgb_data: &[u8],
