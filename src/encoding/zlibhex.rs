@@ -42,6 +42,7 @@ use std::io;
 /// # Errors
 ///
 /// Returns an error if zlib compression fails
+#[allow(clippy::cast_possible_truncation)] // Zlib total_in/total_out limited to buffer size
 pub fn encode_zlibhex_persistent(
     data: &[u8],
     width: u16,

@@ -182,6 +182,7 @@ impl Encoding for TightEncoding {
 /// Implements Tight encoding optimization as specified in RFC 6143
 #[allow(clippy::similar_names)] // dx_end and dy_end are clear in context (delta x/y end coordinates)
 #[allow(clippy::too_many_lines)] // Complex algorithm implementing RFC 6143 Tight encoding optimization
+#[allow(clippy::cast_possible_truncation)] // Rectangle dimensions limited to u16 per VNC protocol
 fn encode_rect_optimized(
     framebuffer: &[u8],
     fb_width: u16,
@@ -443,6 +444,7 @@ fn encode_subrect(
 
 /// Encode large rectangle by splitting it into smaller tiles
 /// Ensures rectangles stay within size limits
+#[allow(clippy::cast_possible_truncation)] // Tight max rect size divided by width always fits in u16
 fn encode_large_rect(
     framebuffer: &[u8],
     fb_width: u16,
@@ -491,7 +493,6 @@ fn check_solid_tile(
     h: u16,
     need_same_color: Option<u32>,
 ) -> Option<u32> {
-    let _fb_stride = fb_width as usize * 4; // RGBA32
     let offset = (y as usize * fb_width as usize + x as usize) * 4;
 
     // Get first pixel color (RGB24)
@@ -584,6 +585,7 @@ fn find_best_solid_area(
 
 /// Extend solid area to maximum size
 /// Expands solid region in all directions
+#[allow(clippy::too_many_arguments)] // Tight encoding algorithm requires all geometric parameters for region expansion
 fn extend_solid_area(
     framebuffer: &[u8],
     fb_width: u16,
@@ -798,6 +800,7 @@ fn encode_mono_rect(
 
 /// Encode indexed palette rectangle (3-16 colors)
 /// Implements palette-based encoding with color indices
+#[allow(clippy::cast_possible_truncation)] // Palette limited to 16 colors, indices fit in u8
 fn encode_indexed_rect(
     pixels: &[u8],
     width: u16,
@@ -1029,6 +1032,7 @@ fn encode_mono_bitmap(pixels: &[u8], width: u16, height: u16, bg: u32) -> Vec<u8
 
 /// Write compact length encoding
 /// Implements variable-length integer encoding for Tight protocol
+#[allow(clippy::cast_possible_truncation)] // Compact length encoding uses variable-length u8 packing per RFC 6143
 fn write_compact_length(buf: &mut BytesMut, len: usize) {
     if len < 128 {
         buf.put_u8(len as u8);

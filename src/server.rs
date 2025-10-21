@@ -168,6 +168,7 @@ impl VncServer {
     /// # Errors
     ///
     /// Returns `Err(std::io::Error)` if there is an issue binding to the port or accepting connections.
+    #[allow(clippy::cast_possible_truncation)] // Client ID counter limited to u64::MAX, safe on 64-bit platforms
     pub async fn listen(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
         info!("VNC Server listening on port {port}");
@@ -427,6 +428,7 @@ impl VncServer {
     ///
     /// Returns `Err(std::io::Error)` if the connection fails or a client ID overflow occurs.
     #[allow(clippy::too_many_lines)] // VNC reverse connection protocol requires complete handshake and error handling
+    #[allow(clippy::cast_possible_truncation)] // Client ID counter limited to u64::MAX, safe on 64-bit platforms
     pub async fn connect_reverse(&self, host: String, port: u16) -> Result<usize, std::io::Error> {
         // Safely increment client ID counter and check for overflow
         let client_id_raw = NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst);
@@ -619,6 +621,7 @@ impl VncServer {
     /// Returns `Err(std::io::Error)` if a client ID counter overflow occurs, or if there is an issue
     /// connecting to the repeater or handling the client.
     #[allow(clippy::too_many_lines)] // VNC repeater protocol requires Mode-2 handshake and complete error handling
+    #[allow(clippy::cast_possible_truncation)] // Client ID counter limited to u64::MAX, safe on 64-bit platforms
     pub async fn connect_repeater(
         &self,
         repeater_host: String,

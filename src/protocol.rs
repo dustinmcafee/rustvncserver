@@ -368,6 +368,7 @@ impl PixelFormat {
         // For truecolor, validate color component ranges
         if self.true_colour_flag != 0 {
             // Check that max values fit in the bit depth
+            #[allow(clippy::cast_possible_truncation)] // leading_zeros() returns max 32, result always fits in u8
             let bits_needed = |max: u16| -> u8 {
                 if max == 0 {
                     0
@@ -557,6 +558,7 @@ impl ServerInit {
     /// # Arguments
     ///
     /// * `buf` - The buffer to write the serialized message into.
+    #[allow(clippy::cast_possible_truncation)] // Desktop name length limited to u32 per VNC protocol
     pub fn write_to(&self, buf: &mut BytesMut) {
         buf.put_u16(self.framebuffer_width);
         buf.put_u16(self.framebuffer_height);

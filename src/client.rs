@@ -154,6 +154,7 @@ impl TightZlibStreams {
     ///
     /// # Returns
     /// Compressed data, or error if compression fails
+    #[allow(clippy::cast_possible_truncation)] // Zlib total_out limited to buffer size, safe to truncate
     fn compress(&mut self, stream_id: usize, level: u8, input: &[u8]) -> Result<Vec<u8>, String> {
         let stream = self.get_or_init_stream(stream_id, level);
 
@@ -480,7 +481,13 @@ impl VncClient {
     /// Returns `Err(std::io::Error)` if an I/O error occurs or an invalid message is received.
     #[allow(clippy::too_many_lines)] // VNC protocol message handler requires complete state machine
     #[allow(clippy::cast_possible_truncation)] // VNC protocol message fields use u8/u16/u32 as specified in RFC 6143
+    #[allow(clippy::cast_sign_loss)] // VNC pseudo-encoding values are negative i32, converted to positive u8/u16 offsets
     pub async fn handle_messages(&mut self) -> Result<(), std::io::Error> {
+        // Use standard VNC quality mapping (TigerVNC compatible)
+        const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
+        // Limit clipboard size to prevent memory exhaustion attacks
+        const MAX_CUT_TEXT: usize = 10 * 1024 * 1024; // 10MB limit
+
         let mut buf = BytesMut::with_capacity(4096);
         let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(16)); // Check for updates ~60 times/sec
 
@@ -561,8 +568,6 @@ impl VncClient {
                                     if (ENCODING_QUALITY_LEVEL_0..=ENCODING_QUALITY_LEVEL_9).contains(&encoding) {
                                         // -32 = level 0 (lowest), -23 = level 9 (highest)
                                         let quality_level = (encoding - ENCODING_QUALITY_LEVEL_0) as u8;
-                                        // Use standard VNC quality mapping (TigerVNC compatible)
-                                        const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
                                         let quality = TIGHT2TURBO_QUAL[quality_level as usize];
                                         self.jpeg_quality.store(quality, Ordering::Relaxed);
                                         self.quality_level.store(quality_level, Ordering::Relaxed); // Store VNC quality level
@@ -578,7 +583,7 @@ impl VncClient {
                                         info!("Client requested compression level {compression_level}, using zlib level {compression_level}");
                                     }
                                 }
-                                *self.encodings.write().await = encodings_list.clone();
+                                self.encodings.write().await.clone_from(&encodings_list);
                                 info!("Client set {count} encodings: {encodings_list:?}");
                             }
                             CLIENT_MSG_FRAMEBUFFER_UPDATE_REQUEST => {
@@ -659,8 +664,6 @@ impl VncClient {
                                 buf.advance(3); // padding
                                 let length = buf.get_u32() as usize;
 
-                                // Limit clipboard size to prevent memory exhaustion attacks
-                                const MAX_CUT_TEXT: usize = 10 * 1024 * 1024; // 10MB limit
                                 if length > MAX_CUT_TEXT {
                                     error!("Cut text too large: {length} bytes (max {MAX_CUT_TEXT}), disconnecting client");
                                     let _ = self.event_tx.send(ClientEvent::Disconnected);
@@ -891,7 +894,9 @@ impl VncClient {
             for region in &copy_regions_to_send {
                 // Calculate source position from destination + offset
                 // In standard VNC protocol: src = dest + (dx, dy)
+                #[allow(clippy::cast_sign_loss)] // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
                 let src_x = (i32::from(region.x) + i32::from(dx)) as u16;
+                #[allow(clippy::cast_sign_loss)] // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
                 let src_y = (i32::from(region.y) + i32::from(dy)) as u16;
 
                 // Use CopyRect encoding
@@ -1356,9 +1361,9 @@ impl VncClient {
         }
 
         // Acquire send mutex to prevent interleaved writes
-        let _lock = self.send_mutex.lock().await;
+        let lock = self.send_mutex.lock().await;
         self.write_stream.lock().await.write_all(&response).await?;
-        drop(_lock);
+        drop(lock);
 
         // Reset deferral timer and update last sent time
         self.start_deferring_nanos.store(0, Ordering::Relaxed); // Reset deferral
@@ -1382,6 +1387,7 @@ impl VncClient {
     /// # Returns
     ///
     /// `Ok(())` on successful transmission, or `Err(std::io::Error)` if an I/O error occurs.
+    #[allow(clippy::cast_possible_truncation)] // Clipboard text length limited to u32 per VNC protocol
     pub async fn send_cut_text(&mut self, text: String) -> Result<(), std::io::Error> {
         let mut msg = BytesMut::new();
         msg.put_u8(SERVER_MSG_SERVER_CUT_TEXT);

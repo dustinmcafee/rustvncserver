@@ -281,6 +281,7 @@ fn filter_wavelet_square(buf: &mut [i32], width: usize, height: usize, level: us
 /// * `height` - Image height
 #[allow(clippy::many_single_char_names)] // r, g, b, y, u, v are standard color component names
 #[allow(clippy::cast_sign_loss)] // RCT transform stores signed YUV as unsigned bytes in i32
+#[allow(clippy::cast_possible_truncation)] // YUV color components limited to i8 range (-128..127) per ZYWRLE spec
 fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
     let mut buf_idx = 0;
     let mut data_idx = 0;

@@ -66,6 +66,7 @@ impl VncAuth {
     /// # Returns
     ///
     /// A `[u8; 16]` array containing the random challenge bytes.
+    #[allow(clippy::unused_self)] // Kept as method for API consistency with other VncAuthenticator methods
     pub fn generate_challenge(&self) -> [u8; 16] {
         let mut rng = rand::thread_rng();
         let mut challenge = [0u8; 16];
@@ -110,6 +111,7 @@ impl VncAuth {
     /// # Returns
     ///
     /// A `Vec<u8>` containing the 16-byte encrypted challenge.
+    #[allow(clippy::unused_self)] // Kept as method for API consistency with other VncAuthenticator methods
     fn encrypt_challenge(&self, challenge: &[u8; 16], password: &str) -> Vec<u8> {
         // Prepare VNC password key (8 bytes, bit-reversed)
         let mut key = [0u8; 8];

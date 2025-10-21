@@ -30,6 +30,7 @@ use log::info;
 pub struct CorRreEncoding;
 
 impl Encoding for CorRreEncoding {
+    #[allow(clippy::cast_possible_truncation)] // CoRRE protocol uses u8 coordinates/dimensions per RFC 6143
     fn encode(
         &self,
         data: &[u8],

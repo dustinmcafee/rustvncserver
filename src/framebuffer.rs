@@ -781,12 +781,13 @@ impl Framebuffer {
     ///
     /// Returns `Err(String)` if the new dimensions are invalid (zero or too large).
     pub async fn resize(&self, new_width: u16, new_height: u16) -> Result<(), String> {
+        const MAX_DIMENSION: u16 = 8192;
+
         // Validate dimensions
         if new_width == 0 || new_height == 0 {
             return Err("Framebuffer dimensions must be greater than zero".to_string());
         }
 
-        const MAX_DIMENSION: u16 = 8192;
         if new_width > MAX_DIMENSION || new_height > MAX_DIMENSION {
             return Err(format!(
                 "Framebuffer dimensions too large: {new_width}x{new_height} (max: {MAX_DIMENSION})"

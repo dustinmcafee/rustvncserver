@@ -199,6 +199,8 @@ pub fn encode_zrle(
 /// Optimized to minimize allocations by working directly with RGBA data where possible.
 #[allow(clippy::cast_possible_truncation)] // ZRLE palette indices and run lengths limited to u8 per RFC 6143
 fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize) {
+    const CPIXEL_SIZE: usize = 3; // CPIXEL is 3 bytes for depth=24
+
     // Quick check for solid color by scanning RGBA data directly (avoid allocation)
     if tile_data.len() >= 4 {
         let first_r = tile_data[0];
@@ -224,7 +226,6 @@ fn encode_tile(buf: &mut BytesMut, tile_data: &[u8], width: usize, height: usize
     let pixels = rgba_to_rgb24_pixels(tile_data);
     let (runs, single_pixels, palette) = analyze_runs_and_palette(&pixels);
 
-    const CPIXEL_SIZE: usize = 3; // CPIXEL is 3 bytes for depth=24
     let mut use_rle = false;
     let mut use_palette = false;
 

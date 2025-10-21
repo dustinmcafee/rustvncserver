@@ -90,7 +90,7 @@ impl TurboJpegEncoder {
     ///
     /// # Errors
     ///
-    /// Returns an error if TurboJPEG initialization fails
+    /// Returns an error if `TurboJPEG` initialization fails
     pub fn new() -> Result<Self, String> {
         let handle = unsafe { tjInitCompress() };
         if handle.is_null() {

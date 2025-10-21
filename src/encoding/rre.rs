@@ -29,6 +29,7 @@ use bytes::{BufMut, BytesMut};
 pub struct RreEncoding;
 
 impl Encoding for RreEncoding {
+    #[allow(clippy::cast_possible_truncation)] // Subrectangle count limited to image size per VNC protocol
     fn encode(
         &self,
         data: &[u8],

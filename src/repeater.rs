@@ -65,6 +65,7 @@ use crate::framebuffer::Framebuffer;
 /// the VNC handshake completes, returning the initialized `VncClient` instance.
 /// Returns `Err(io::Error)` if a network error occurs, the repeater ID is too long,
 /// or if the VNC handshake fails.
+#[allow(clippy::too_many_arguments)] // VNC repeater connection requires all client configuration parameters
 pub async fn connect_repeater(
     client_id: usize,
     repeater_host: String,

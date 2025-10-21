@@ -36,6 +36,7 @@ use std::io;
 /// # Errors
 ///
 /// Returns an error if zlib compression fails
+#[allow(clippy::cast_possible_truncation)] // Zlib total_in/total_out limited to buffer size
 pub fn encode_zlib_persistent(data: &[u8], compressor: &mut Compress) -> io::Result<Vec<u8>> {
     // Convert RGBA to RGBX (client pixel format for 32bpp)
     // R at byte 0, G at byte 1, B at byte 2, padding at byte 3
