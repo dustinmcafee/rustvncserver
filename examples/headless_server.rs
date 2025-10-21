@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // ~30 FPS
         time::sleep(Duration::from_millis(33)).await;
 
-        if frame % 300 == 0 {
+        if frame.is_multiple_of(300) {
             println!("Frame: {}", frame);
         }
     }

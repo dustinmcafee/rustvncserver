@@ -6,7 +6,7 @@ A pure Rust VNC (Virtual Network Computing) server library with complete RFB pro
 [![Documentation](https://docs.rs/rustvncserver/badge.svg)](https://docs.rs/rustvncserver)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Build Status](https://github.com/dustinmcafee/rustvncserver/workflows/CI/badge.svg)](https://github.com/dustinmcafee/rustvncserver/actions)
-[![Rust](https://img.shields.io/badge/rust-1.76%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
 [![Downloads](https://img.shields.io/crates/d/rustvncserver.svg)](https://crates.io/crates/rustvncserver)
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Dustin%20McAfee-blue?style=flat&logo=linkedin)](https://www.linkedin.com/in/dustinmcafee/)

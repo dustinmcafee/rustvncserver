@@ -1021,7 +1021,7 @@ fn encode_mono_bitmap(pixels: &[u8], width: u16, height: u16, bg: u32) -> Vec<u8
         }
 
         // Write partial byte at end of row
-        if w % 8 != 0 {
+        if !w.is_multiple_of(8) {
             bitmap[bitmap_idx] = byte_val;
             bitmap_idx += 1;
         }
