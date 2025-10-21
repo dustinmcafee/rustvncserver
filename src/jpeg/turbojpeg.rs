@@ -60,6 +60,7 @@ pub const TJSAMP_GRAY: c_int = 3;
 type TjHandle = *mut c_void;
 
 // External C functions from libjpeg-turbo
+#[link(name = "turbojpeg")]
 extern "C" {
     fn tjInitCompress() -> TjHandle;
     fn tjDestroy(handle: TjHandle) -> c_int;

@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `clippy::pedantic` lint warnings for higher code quality standards
 - Improved rustdoc output quality with proper markdown formatting
 
+### Fixed
+- Added missing `#[link(name = "turbojpeg")]` attribute for proper linking when turbojpeg feature is enabled
+
 ## [1.0.2] - 2025-01-20
 
 ### Fixed
