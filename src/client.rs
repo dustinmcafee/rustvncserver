@@ -50,7 +50,16 @@ use crate::auth::VncAuth;
 use crate::encoding;
 use crate::encoding::tight::TightStreamCompressor;
 use crate::framebuffer::{DirtyRegion, Framebuffer};
-use crate::protocol::{CLIENT_MSG_CLIENT_CUT_TEXT, CLIENT_MSG_FRAMEBUFFER_UPDATE_REQUEST, CLIENT_MSG_KEY_EVENT, CLIENT_MSG_POINTER_EVENT, CLIENT_MSG_SET_ENCODINGS, CLIENT_MSG_SET_PIXEL_FORMAT, ENCODING_COMPRESS_LEVEL_0, ENCODING_COMPRESS_LEVEL_9, ENCODING_COPYRECT, ENCODING_CORRE, ENCODING_HEXTILE, ENCODING_QUALITY_LEVEL_0, ENCODING_QUALITY_LEVEL_9, ENCODING_RAW, ENCODING_RRE, ENCODING_TIGHT, ENCODING_TIGHTPNG, ENCODING_ZLIB, ENCODING_ZLIBHEX, ENCODING_ZRLE, ENCODING_ZYWRLE, PROTOCOL_VERSION, PixelFormat, Rectangle, SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, SECURITY_TYPE_NONE, SECURITY_TYPE_VNC_AUTH, SERVER_MSG_FRAMEBUFFER_UPDATE, SERVER_MSG_SERVER_CUT_TEXT, ServerInit};
+use crate::protocol::{
+    PixelFormat, Rectangle, ServerInit, CLIENT_MSG_CLIENT_CUT_TEXT,
+    CLIENT_MSG_FRAMEBUFFER_UPDATE_REQUEST, CLIENT_MSG_KEY_EVENT, CLIENT_MSG_POINTER_EVENT,
+    CLIENT_MSG_SET_ENCODINGS, CLIENT_MSG_SET_PIXEL_FORMAT, ENCODING_COMPRESS_LEVEL_0,
+    ENCODING_COMPRESS_LEVEL_9, ENCODING_COPYRECT, ENCODING_CORRE, ENCODING_HEXTILE,
+    ENCODING_QUALITY_LEVEL_0, ENCODING_QUALITY_LEVEL_9, ENCODING_RAW, ENCODING_RRE, ENCODING_TIGHT,
+    ENCODING_TIGHTPNG, ENCODING_ZLIB, ENCODING_ZLIBHEX, ENCODING_ZRLE, ENCODING_ZYWRLE,
+    PROTOCOL_VERSION, SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, SECURITY_TYPE_NONE,
+    SECURITY_TYPE_VNC_AUTH, SERVER_MSG_FRAMEBUFFER_UPDATE, SERVER_MSG_SERVER_CUT_TEXT,
+};
 use crate::translate;
 
 /// Represents various events that a VNC client can send to the server.
@@ -134,7 +143,8 @@ impl TightZlibStreams {
                 stream.reset();
                 // Unfortunately, we can't change compression level without recreating
                 // So we'll recreate the stream (dictionary will be rebuilt)
-                self.streams[stream_id] = Some(Compress::new(Compression::new(u32::from(level)), true));
+                self.streams[stream_id] =
+                    Some(Compress::new(Compression::new(u32::from(level)), true));
                 self.levels[stream_id] = level;
             }
         }
@@ -303,7 +313,8 @@ impl VncClient {
     ) -> Result<Self, std::io::Error> {
         // Capture remote host address before handshake
         let remote_host = stream
-            .peer_addr().map_or_else(|_| "unknown".to_string(), |addr| addr.to_string());
+            .peer_addr()
+            .map_or_else(|_| "unknown".to_string(), |addr| addr.to_string());
 
         // Disable Nagle's algorithm for immediate frame delivery
         stream.set_nodelay(true)?;
@@ -751,9 +762,7 @@ impl VncClient {
         // Get requested region (standard VNC protocol: requestedRegion)
         let requested = *self.requested_region.read().await;
 
-        info!(
-            "send_batched_update called, requested region: {requested:?}"
-        );
+        info!("send_batched_update called, requested region: {requested:?}");
 
         // STEP 1: Get copy regions to send (standard VNC protocol: copyRegion sent FIRST)
         let (copy_regions_to_send, copy_src_offset): (Vec<DirtyRegion>, Option<(i16, i16)>) = {
@@ -894,9 +903,11 @@ impl VncClient {
             for region in &copy_regions_to_send {
                 // Calculate source position from destination + offset
                 // In standard VNC protocol: src = dest + (dx, dy)
-                #[allow(clippy::cast_sign_loss)] // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
+                #[allow(clippy::cast_sign_loss)]
+                // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
                 let src_x = (i32::from(region.x) + i32::from(dx)) as u16;
-                #[allow(clippy::cast_sign_loss)] // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
+                #[allow(clippy::cast_sign_loss)]
+                // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
                 let src_y = (i32::from(region.y) + i32::from(dy)) as u16;
 
                 // Use CopyRect encoding
@@ -1075,9 +1086,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
-                    info!(
-                        "Initialized ZLIB compressor with level {compression_level}"
-                    );
+                    info!("Initialized ZLIB compressor with level {compression_level}");
                 }
                 let zlib_comp = zlib_lock.as_mut().unwrap();
 
@@ -1116,9 +1125,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
-                    info!(
-                        "Initialized ZLIBHEX compressor with level {compression_level}"
-                    );
+                    info!("Initialized ZLIBHEX compressor with level {compression_level}");
                 }
                 let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
 
@@ -1162,9 +1169,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
-                    info!(
-                        "Initialized ZRLE compressor with level {compression_level}"
-                    );
+                    info!("Initialized ZRLE compressor with level {compression_level}");
                 }
                 let zrle_comp = zrle_lock.as_mut().unwrap();
 
@@ -1324,9 +1329,7 @@ impl VncClient {
                 )
             } else {
                 // Fallback to RAW encoding if preferred encoding is not available
-                error!(
-                    "Encoding {preferred_encoding} not available, falling back to RAW"
-                );
+                error!("Encoding {preferred_encoding} not available, falling back to RAW");
                 encoding_name = "RAW"; // Update encoding name to reflect fallback
                                        // Translate for RAW fallback
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {

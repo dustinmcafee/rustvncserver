@@ -17,7 +17,9 @@
 //! This module provides all supported VNC encodings for efficient framebuffer
 //! transmission over the network.
 
-use crate::protocol::{ENCODING_CORRE, ENCODING_HEXTILE, ENCODING_RAW, ENCODING_RRE, ENCODING_TIGHT, ENCODING_TIGHTPNG};
+use crate::protocol::{
+    ENCODING_CORRE, ENCODING_HEXTILE, ENCODING_RAW, ENCODING_RRE, ENCODING_TIGHT, ENCODING_TIGHTPNG,
+};
 use bytes::BytesMut;
 
 pub mod common;
@@ -77,7 +79,8 @@ pub trait Encoding {
 }
 
 /// Creates an encoder instance for the specified encoding type.
-#[must_use] pub fn get_encoder(encoding_type: i32) -> Option<Box<dyn Encoding>> {
+#[must_use]
+pub fn get_encoder(encoding_type: i32) -> Option<Box<dyn Encoding>> {
     match encoding_type {
         ENCODING_RAW => Some(Box::new(RawEncoding)),
         ENCODING_RRE => Some(Box::new(RreEncoding)),

@@ -64,7 +64,8 @@ impl DirtyRegion {
     /// # Returns
     ///
     /// A new `DirtyRegion` instance.
-    #[must_use] pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+    #[must_use]
+    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
         Self {
             x,
             y,
@@ -83,7 +84,8 @@ impl DirtyRegion {
     /// # Returns
     ///
     /// A new `DirtyRegion` representing the union of the two regions.
-    #[must_use] pub fn merge(&self, other: &DirtyRegion) -> DirtyRegion {
+    #[must_use]
+    pub fn merge(&self, other: &DirtyRegion) -> DirtyRegion {
         let x1 = self.x.min(other.x);
         let y1 = self.y.min(other.y);
         // Use saturating_add to prevent overflow
@@ -113,7 +115,8 @@ impl DirtyRegion {
     /// # Returns
     ///
     /// `true` if the regions intersect, `false` otherwise.
-    #[must_use] pub fn intersects(&self, other: &DirtyRegion) -> bool {
+    #[must_use]
+    pub fn intersects(&self, other: &DirtyRegion) -> bool {
         let x1 = self.x.max(other.x);
         let y1 = self.y.max(other.y);
         // Use saturating_add to prevent overflow
@@ -143,7 +146,8 @@ impl DirtyRegion {
     ///
     /// An `Option<DirtyRegion>` which is `Some(DirtyRegion)` if they intersect,
     /// or `None` if they do not.
-    #[must_use] pub fn intersect(&self, other: &DirtyRegion) -> Option<DirtyRegion> {
+    #[must_use]
+    pub fn intersect(&self, other: &DirtyRegion) -> Option<DirtyRegion> {
         let x1 = self.x.max(other.x);
         let y1 = self.y.max(other.y);
         // Use saturating_add to prevent overflow
@@ -189,7 +193,8 @@ impl DirtyRegionReceiver {
     /// # Returns
     ///
     /// A new `DirtyRegionReceiver` instance.
-    #[must_use] pub fn new(regions: Weak<RwLock<Vec<DirtyRegion>>>) -> Self {
+    #[must_use]
+    pub fn new(regions: Weak<RwLock<Vec<DirtyRegion>>>) -> Self {
         Self { regions }
     }
 
@@ -277,7 +282,8 @@ impl Framebuffer {
     /// # Returns
     ///
     /// A new `Framebuffer` instance.
-    #[must_use] pub fn new(width: u16, height: u16) -> Self {
+    #[must_use]
+    pub fn new(width: u16, height: u16) -> Self {
         let size = (width as usize) * (height as usize) * 4; // RGBA32
         Self {
             width: Arc::new(AtomicU16::new(width)),
@@ -340,12 +346,14 @@ impl Framebuffer {
     }
 
     /// Returns the width of the framebuffer.
-    #[must_use] pub fn width(&self) -> u16 {
+    #[must_use]
+    pub fn width(&self) -> u16 {
         self.width.load(AtomicOrdering::Relaxed)
     }
 
     /// Returns the height of the framebuffer.
-    #[must_use] pub fn height(&self) -> u16 {
+    #[must_use]
+    pub fn height(&self) -> u16 {
         self.height.load(AtomicOrdering::Relaxed)
     }
 

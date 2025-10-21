@@ -324,7 +324,8 @@ impl PixelFormat {
     /// # Returns
     ///
     /// `true` if the pixel format matches 32-bit RGBA, `false` otherwise.
-    #[must_use] pub fn is_compatible_with_rgba32(&self) -> bool {
+    #[must_use]
+    pub fn is_compatible_with_rgba32(&self) -> bool {
         self.bits_per_pixel == 32
             && self.depth == 24
             && self.big_endian_flag == 0
@@ -345,7 +346,8 @@ impl PixelFormat {
     /// # Returns
     ///
     /// `true` if the format is valid and supported, `false` otherwise.
-    #[must_use] pub fn is_valid(&self) -> bool {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
         // Check bits per pixel is valid
         if self.bits_per_pixel != 8
             && self.bits_per_pixel != 16
@@ -368,7 +370,8 @@ impl PixelFormat {
         // For truecolor, validate color component ranges
         if self.true_colour_flag != 0 {
             // Check that max values fit in the bit depth
-            #[allow(clippy::cast_possible_truncation)] // leading_zeros() returns max 32, result always fits in u8
+            #[allow(clippy::cast_possible_truncation)]
+            // leading_zeros() returns max 32, result always fits in u8
             let bits_needed = |max: u16| -> u8 {
                 if max == 0 {
                     0
@@ -404,7 +407,8 @@ impl PixelFormat {
     ///
     /// A `PixelFormat` instance configured for 16-bit RGB565.
     #[allow(dead_code)]
-    #[must_use] pub fn rgb565() -> Self {
+    #[must_use]
+    pub fn rgb565() -> Self {
         Self {
             bits_per_pixel: 16,
             depth: 16,
@@ -427,7 +431,8 @@ impl PixelFormat {
     ///
     /// A `PixelFormat` instance configured for 16-bit RGB555.
     #[allow(dead_code)]
-    #[must_use] pub fn rgb555() -> Self {
+    #[must_use]
+    pub fn rgb555() -> Self {
         Self {
             bits_per_pixel: 16,
             depth: 15,
@@ -451,7 +456,8 @@ impl PixelFormat {
     ///
     /// A `PixelFormat` instance configured for 8-bit BGR233.
     #[allow(dead_code)]
-    #[must_use] pub fn bgr233() -> Self {
+    #[must_use]
+    pub fn bgr233() -> Self {
         Self {
             bits_per_pixel: 8,
             depth: 8,

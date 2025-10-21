@@ -76,26 +76,17 @@ pub async fn connect_repeater(
     password: Option<String>,
     event_tx: mpsc::UnboundedSender<ClientEvent>,
 ) -> Result<VncClient, io::Error> {
-    info!(
-        "Connecting to VNC repeater {repeater_host}:{repeater_port} with ID: {repeater_id}"
-    );
+    info!("Connecting to VNC repeater {repeater_host}:{repeater_port} with ID: {repeater_id}");
 
     // Connect to repeater
-    info!(
-        "Attempting TCP connection to {repeater_host}:{repeater_port}..."
-    );
-    let mut stream = match TcpStream::connect(format!("{repeater_host}:{repeater_port}")).await
-    {
+    info!("Attempting TCP connection to {repeater_host}:{repeater_port}...");
+    let mut stream = match TcpStream::connect(format!("{repeater_host}:{repeater_port}")).await {
         Ok(s) => {
-            info!(
-                "TCP connection established to {repeater_host}:{repeater_port}"
-            );
+            info!("TCP connection established to {repeater_host}:{repeater_port}");
             s
         }
         Err(e) => {
-            error!(
-                "Failed to establish TCP connection to {repeater_host}:{repeater_port}: {e}"
-            );
+            error!("Failed to establish TCP connection to {repeater_host}:{repeater_port}: {e}");
             return Err(e);
         }
     };
@@ -120,9 +111,7 @@ pub async fn connect_repeater(
     // Send ID to repeater
     info!("Sending repeater ID: {id_string}");
     if let Err(e) = stream.write_all(&id_buffer).await {
-        error!(
-            "Failed to send repeater ID to {repeater_host}:{repeater_port}: {e}"
-        );
+        error!("Failed to send repeater ID to {repeater_host}:{repeater_port}: {e}");
         return Err(e);
     }
 

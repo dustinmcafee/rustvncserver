@@ -82,9 +82,7 @@ fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) ->
         let mut writer = match encoder.write_header() {
             Ok(w) => w,
             Err(e) => {
-                log::error!(
-                    "PNG header write failed: {e}, falling back to basic encoding"
-                );
+                log::error!("PNG header write failed: {e}, falling back to basic encoding");
                 // Fall back to basic tight encoding
                 let mut buf = BytesMut::with_capacity(1 + data.len());
                 buf.put_u8(0x00); // Basic tight encoding, no compression
@@ -99,9 +97,7 @@ fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) ->
         };
 
         if let Err(e) = writer.write_image_data(&rgb_data) {
-            log::error!(
-                "PNG data write failed: {e}, falling back to basic encoding"
-            );
+            log::error!("PNG data write failed: {e}, falling back to basic encoding");
             // Fall back to basic tight encoding
             let mut buf = BytesMut::with_capacity(1 + data.len());
             buf.put_u8(0x00); // Basic tight encoding, no compression

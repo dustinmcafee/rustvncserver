@@ -35,7 +35,8 @@ pub struct Subrect {
 /// Convert RGBA (4 bytes/pixel) to RGB24 pixel values in VNC pixel format.
 /// Our pixel format has: `red_shift=0`, `green_shift=8`, `blue_shift=16`, little-endian
 /// So pixel = (R << 0) | (G << 8) | (B << 16) = 0x00BBGGRR
-#[must_use] pub fn rgba_to_rgb24_pixels(data: &[u8]) -> Vec<u32> {
+#[must_use]
+pub fn rgba_to_rgb24_pixels(data: &[u8]) -> Vec<u32> {
     data.chunks_exact(4)
         .map(|chunk| {
             u32::from(chunk[0]) | // R at bits 0-7
@@ -46,7 +47,8 @@ pub struct Subrect {
 }
 
 /// Find the most common color in the pixel array.
-#[must_use] pub fn get_background_color(pixels: &[u32]) -> u32 {
+#[must_use]
+pub fn get_background_color(pixels: &[u32]) -> u32 {
     if pixels.is_empty() {
         return 0;
     }
@@ -151,7 +153,8 @@ pub fn find_subrects(pixels: &[u32], width: usize, height: usize, bg_color: u32)
 }
 
 /// Extract a tile from the pixel array.
-#[must_use] pub fn extract_tile(
+#[must_use]
+pub fn extract_tile(
     pixels: &[u32],
     width: usize,
     x: usize,
@@ -170,7 +173,8 @@ pub fn find_subrects(pixels: &[u32], width: usize, height: usize, bg_color: u32)
 
 /// Analyze tile colors to determine if solid, monochrome, or multicolor.
 /// Returns: (`is_solid`, `is_mono`, `bg_color`, `fg_color`)
-#[must_use] pub fn analyze_tile_colors(pixels: &[u32]) -> (bool, bool, u32, u32) {
+#[must_use]
+pub fn analyze_tile_colors(pixels: &[u32]) -> (bool, bool, u32, u32) {
     if pixels.is_empty() {
         return (true, true, 0, 0);
     }
@@ -212,7 +216,8 @@ pub fn put_pixel24(buf: &mut BytesMut, pixel: u32) {
 }
 
 /// Check if all pixels are the same color.
-#[must_use] pub fn check_solid_color(pixels: &[u32]) -> Option<u32> {
+#[must_use]
+pub fn check_solid_color(pixels: &[u32]) -> Option<u32> {
     if pixels.is_empty() {
         return None;
     }
@@ -226,7 +231,8 @@ pub fn put_pixel24(buf: &mut BytesMut, pixel: u32) {
 }
 
 /// Build a color palette from pixels.
-#[must_use] pub fn build_palette(pixels: &[u32]) -> Vec<u32> {
+#[must_use]
+pub fn build_palette(pixels: &[u32]) -> Vec<u32> {
     let mut colors: HashMap<u32, usize> = HashMap::new();
     for &pixel in pixels {
         *colors.entry(pixel).or_insert(0) += 1;

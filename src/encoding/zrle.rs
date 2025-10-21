@@ -503,7 +503,9 @@ impl Encoding for ZrleEncoding {
     ) -> BytesMut {
         // ZRLE doesn't use quality, but it does use compression.
         let pixel_format = PixelFormat::rgba32(); // Assuming RGBA32 for now
-        if let Ok(encoded_data) = encode_zrle(data, width, height, &pixel_format, compression) { BytesMut::from(&encoded_data[..]) } else {
+        if let Ok(encoded_data) = encode_zrle(data, width, height, &pixel_format, compression) {
+            BytesMut::from(&encoded_data[..])
+        } else {
             // Fallback to Raw encoding if ZRLE fails.
             let mut buf = BytesMut::with_capacity(data.len());
             for chunk in data.chunks_exact(4) {
