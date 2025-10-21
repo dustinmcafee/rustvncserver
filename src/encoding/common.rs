@@ -63,7 +63,9 @@ pub struct Subrect {
 }
 
 /// Find subrectangles of non-background pixels.
-#[must_use] pub fn find_subrects(pixels: &[u32], width: usize, height: usize, bg_color: u32) -> Vec<Subrect> {
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // Subrect coordinates limited to tile dimensions (max 16x16)
+pub fn find_subrects(pixels: &[u32], width: usize, height: usize, bg_color: u32) -> Vec<Subrect> {
     let mut subrects = Vec::new();
     let mut marked = vec![false; pixels.len()];
 

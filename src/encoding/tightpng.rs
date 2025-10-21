@@ -52,6 +52,7 @@ impl Encoding for TightPngEncoding {
 /// Encode as `TightPng` using PNG compression.
 ///
 /// This is the only compression mode used by `TightPng` encoding.
+#[allow(clippy::cast_possible_truncation)] // TightPng compact length encoding uses variable-length u8 packing per RFC 6143
 fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) -> BytesMut {
     use png::{BitDepth, ColorType, Encoder};
 

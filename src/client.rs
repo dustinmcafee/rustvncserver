@@ -478,6 +478,8 @@ impl VncClient {
     ///
     /// `Ok(())` if the client disconnects gracefully.
     /// Returns `Err(std::io::Error)` if an I/O error occurs or an invalid message is received.
+    #[allow(clippy::too_many_lines)] // VNC protocol message handler requires complete state machine
+    #[allow(clippy::cast_possible_truncation)] // VNC protocol message fields use u8/u16/u32 as specified in RFC 6143
     pub async fn handle_messages(&mut self) -> Result<(), std::io::Error> {
         let mut buf = BytesMut::with_capacity(4096);
         let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(16)); // Check for updates ~60 times/sec
@@ -740,6 +742,8 @@ impl VncClient {
     ///
     /// A `Result` which is `Ok(())` on successful transmission of the update, or
     /// `Err(std::io::Error)` if an I/O error occurs during encoding or sending.
+    #[allow(clippy::too_many_lines)] // VNC framebuffer update encoding requires handling all encoding types
+    #[allow(clippy::cast_possible_truncation)] // VNC protocol rectangle headers use u16 dimensions
     async fn send_batched_update(&mut self) -> Result<(), std::io::Error> {
         // Get requested region (standard VNC protocol: requestedRegion)
         let requested = *self.requested_region.read().await;
