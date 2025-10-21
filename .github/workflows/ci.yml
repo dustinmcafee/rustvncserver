@@ -46,7 +46,7 @@ jobs:
 
     - name: Install libjpeg-turbo (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
-      run: sudo apt-get update && sudo apt-get install -y libjpeg-turbo8-dev
+      run: sudo apt-get update && sudo apt-get install -y libturbojpeg libturbojpeg0-dev
 
     - name: Install libjpeg-turbo (macOS)
       if: matrix.os == 'macos-latest'
@@ -73,7 +73,7 @@ jobs:
         components: clippy
 
     - name: Install libjpeg-turbo
-      run: sudo apt-get update && sudo apt-get install -y libjpeg-turbo8-dev
+      run: sudo apt-get update && sudo apt-get install -y libturbojpeg libturbojpeg0-dev
 
     - name: Run clippy
       run: cargo clippy --all-targets --all-features -- -D warnings
@@ -102,7 +102,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     - name: Install libjpeg-turbo
-      run: sudo apt-get update && sudo apt-get install -y libjpeg-turbo8-dev
+      run: sudo apt-get update && sudo apt-get install -y libturbojpeg libturbojpeg0-dev
 
     - name: Check documentation
       run: cargo doc --all-features --no-deps
