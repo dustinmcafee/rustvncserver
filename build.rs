@@ -48,7 +48,16 @@ fn main() {
         "linux" => {
             // On Linux, turbojpeg is typically available via system package manager
             // (libjpeg-turbo8-dev on Ubuntu/Debian)
-            // The library is usually in standard system paths, so we just need to link it
+            // Add common library paths for different architectures
+            if let Ok(target_arch) = env::var("CARGO_CFG_TARGET_ARCH") {
+                let lib_path = match target_arch.as_str() {
+                    "x86_64" => "/usr/lib/x86_64-linux-gnu",
+                    "aarch64" => "/usr/lib/aarch64-linux-gnu",
+                    "arm" => "/usr/lib/arm-linux-gnueabihf",
+                    _ => "/usr/lib",
+                };
+                println!("cargo:rustc-link-search=native={}", lib_path);
+            }
             println!("cargo:rustc-link-lib=turbojpeg");
         }
         "windows" => {
