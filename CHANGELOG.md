@@ -5,6 +5,31 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2025-01-21
+
+### Fixed
+- **Critical encoding bug:** Fixed server incorrectly selecting COPYRECT as preferred encoding
+  - Server was blindly using the first encoding from client's list, which could be COPYRECT
+  - COPYRECT is only for copy rectangle operations, not general framebuffer encoding
+  - Now properly skips COPYRECT and selects the first supported encoding (TIGHT, ZRLE, etc.)
+  - Eliminates "Encoding 1 not available, falling back to RAW" error and poor performance
+
+## [1.1.1] - 2025-01-21
+
+### Added
+- **Security feature:** `debug-logging` feature flag to control verbose logging
+  - Hides sensitive information (client IPs, connection details, protocol versions) by default
+  - Enable with `features = ["debug-logging"]` for troubleshooting
+  - Operational logs (server startup, client connect/disconnect) remain visible
+
+### Fixed
+- Eliminated all unused variable and assignment warnings when `debug-logging` is disabled
+- Fixed clippy `uninlined_format_args` warning in tight.rs
+- Code formatting consistency with `cargo fmt`
+
+### Changed
+- Updated minimum Rust version requirement from 1.76 to 1.90 in CONTRIBUTING.md
+
 ## [1.1.0] - 2025-01-20
 
 ### Added
