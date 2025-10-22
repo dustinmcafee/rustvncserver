@@ -947,10 +947,7 @@ fn encode_jpeg_rect(pixels: &[u8], width: u16, height: u16, quality: u8) -> Byte
 
     #[cfg(not(feature = "turbojpeg"))]
     {
-        info!(
-            "TurboJPEG not enabled, using full-color (quality={})",
-            quality
-        );
+        info!("TurboJPEG not enabled, using full-color (quality={quality})");
         encode_full_color_rect(pixels, width, height, 6)
     }
 }
