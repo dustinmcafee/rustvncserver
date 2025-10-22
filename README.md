@@ -109,6 +109,7 @@ rustvncserver = { version = "1.1", features = ["turbojpeg"] }
 
 **Features:**
 - `turbojpeg` - Enable TurboJPEG for hardware-accelerated JPEG compression (requires libjpeg-turbo)
+- `debug-logging` - Enable verbose debug logging (shows client IPs, connection details, encoding statistics)
 
 ## Quick Start
 

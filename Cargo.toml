@@ -1,6 +1,6 @@
 [package]
 name = "rustvncserver"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 rust-version = "1.90"
 authors = ["Dustin McAfee"]
@@ -27,6 +27,7 @@ rand = "0.8"            # Random number generation for auth
 [features]
 default = []
 turbojpeg = []          # Enable TurboJPEG for better JPEG performance (requires libjpeg-turbo)
+debug-logging = []      # Enable verbose debug logging (shows client IPs, connection details)
 
 [dev-dependencies]
 tokio-test = "0.4"
