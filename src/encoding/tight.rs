@@ -1307,6 +1307,7 @@ fn compress_data<C: TightStreamCompressor>(
     stream_id: u8,
     compressor: &mut C,
 ) {
+    #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables))]
     let before_len = buf.len();
 
     // Data < 12 bytes sent raw WITHOUT length
@@ -1352,6 +1353,8 @@ fn compress_data<C: TightStreamCompressor>(
                 e,
                 data.len()
             );
+            #[cfg(not(feature = "debug-logging"))]
+            let _ = e;
 
             write_compact_length(buf, data.len());
             buf.put_slice(data);
