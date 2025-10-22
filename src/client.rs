@@ -770,7 +770,7 @@ impl VncClient {
         // Get requested region (standard VNC protocol: requestedRegion)
         let requested = *self.requested_region.read().await;
 
-                #[cfg(feature = "debug-logging")]
+        #[cfg(feature = "debug-logging")]
         info!("send_batched_update called, requested region: {requested:?}");
 
         // STEP 1: Get copy regions to send (standard VNC protocol: copyRegion sent FIRST)
@@ -848,7 +848,7 @@ impl VncClient {
 
         // If no regions to send at all, nothing to do
         if copy_regions_to_send.is_empty() && modified_regions_to_send.is_empty() {
-                #[cfg(feature = "debug-logging")]
+            #[cfg(feature = "debug-logging")]
             info!(
                 "No regions to send (copy={}, modified={})",
                 copy_regions_to_send.len(),
@@ -888,7 +888,10 @@ impl VncClient {
         response.put_u8(0); // padding
         response.put_u16(total_rects as u16); // number of rectangles
 
-        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables, unused_assignments))]
+        #[cfg_attr(
+            not(feature = "debug-logging"),
+            allow(unused_variables, unused_assignments)
+        )]
         let mut encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
             ENCODING_TIGHTPNG => "TIGHTPNG",
@@ -902,9 +905,15 @@ impl VncClient {
             _ => "RAW",
         };
 
-        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables, unused_assignments))]
+        #[cfg_attr(
+            not(feature = "debug-logging"),
+            allow(unused_variables, unused_assignments)
+        )]
         let mut total_pixels = 0u64;
-        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables, unused_assignments))]
+        #[cfg_attr(
+            not(feature = "debug-logging"),
+            allow(unused_variables, unused_assignments)
+        )]
         let mut copy_rect_count = 0;
 
         // Load quality/compression settings atomically
@@ -960,7 +969,7 @@ impl VncClient {
                     let mut x = 0;
                     while x < region.width {
                         let tile_width = std::cmp::min(255, region.width - x);
-                #[cfg(feature = "debug-logging")]
+                        #[cfg(feature = "debug-logging")]
                         info!(
                             "CoRRE: Encoding tile at ({},{}) size {}x{}",
                             region.x + x,
@@ -1102,7 +1111,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
-                #[cfg(feature = "debug-logging")]
+                    #[cfg(feature = "debug-logging")]
                     info!("Initialized ZLIB compressor with level {compression_level}");
                 }
                 let zlib_comp = zlib_lock.as_mut().unwrap();
@@ -1142,7 +1151,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
-                #[cfg(feature = "debug-logging")]
+                    #[cfg(feature = "debug-logging")]
                     info!("Initialized ZLIBHEX compressor with level {compression_level}");
                 }
                 let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
@@ -1187,7 +1196,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
-                #[cfg(feature = "debug-logging")]
+                    #[cfg(feature = "debug-logging")]
                     info!("Initialized ZRLE compressor with level {compression_level}");
                 }
                 let zrle_comp = zrle_lock.as_mut().unwrap();
@@ -1253,7 +1262,7 @@ impl VncClient {
                             Compression::new(u32::from(compression_level)),
                             true,
                         ));
-                #[cfg(feature = "debug-logging")]
+                        #[cfg(feature = "debug-logging")]
                         info!(
                             "Initialized ZRLE compressor for ZYWRLE with level {compression_level}"
                         );
