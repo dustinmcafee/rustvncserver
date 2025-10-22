@@ -325,6 +325,7 @@ impl VncClient {
         // Read client protocol version
         let mut version_buf = vec![0u8; 12];
         stream.read_exact(&mut version_buf).await?;
+        #[cfg(feature = "debug-logging")]
         info!("Client version: {}", String::from_utf8_lossy(&version_buf));
 
         // Send security types
@@ -382,6 +383,7 @@ impl VncClient {
         server_init.write_to(&mut init_buf);
         stream.write_all(&init_buf).await?;
 
+        #[cfg(feature = "debug-logging")]
         info!("VNC client handshake completed");
 
         // Split stream into read/write halves for lock-free shutdown
@@ -547,6 +549,7 @@ impl VncClient {
                                 let compatible = requested_format.is_compatible_with_rgba32();
                                 *self.pixel_format.write().await = requested_format.clone();
 
+                                #[cfg(feature = "debug-logging")]
                                 if compatible {
                                     info!("Client set pixel format: RGBA32 (no translation needed)");
                                 } else {
@@ -582,6 +585,7 @@ impl VncClient {
                                         let quality = TIGHT2TURBO_QUAL[quality_level as usize];
                                         self.jpeg_quality.store(quality, Ordering::Relaxed);
                                         self.quality_level.store(quality_level, Ordering::Relaxed); // Store VNC quality level
+                                        #[cfg(feature = "debug-logging")]
                                         info!("Client requested quality level {quality_level}, using JPEG quality {quality}");
                                     }
 
@@ -591,10 +595,12 @@ impl VncClient {
                                         let compression_level = (encoding - ENCODING_COMPRESS_LEVEL_0) as u8;
                                         // Use compression level directly (0=fastest, 9=best compression)
                                         self.compression_level.store(compression_level, Ordering::Relaxed);
+                                        #[cfg(feature = "debug-logging")]
                                         info!("Client requested compression level {compression_level}, using zlib level {compression_level}");
                                     }
                                 }
                                 self.encodings.write().await.clone_from(&encodings_list);
+                                #[cfg(feature = "debug-logging")]
                                 info!("Client set {count} encodings: {encodings_list:?}");
                             }
                             CLIENT_MSG_FRAMEBUFFER_UPDATE_REQUEST => {
@@ -608,6 +614,7 @@ impl VncClient {
                                 let width = buf.get_u16();
                                 let height = buf.get_u16();
 
+                                #[cfg(feature = "debug-logging")]
                                 info!("FramebufferUpdateRequest: incremental={incremental}, region=({x},{y} {width}x{height})");
 
                                 // Track requested region (standard VNC protocol cl->requestedRegion)
@@ -624,6 +631,7 @@ impl VncClient {
                                     let mut regions = self.modified_regions.write().await;
                                     regions.clear();
                                     regions.push(full_region);
+                                    #[cfg(feature = "debug-logging")]
                                     info!("Non-incremental update: added full region to dirty list");
                                 }
 
@@ -762,6 +770,7 @@ impl VncClient {
         // Get requested region (standard VNC protocol: requestedRegion)
         let requested = *self.requested_region.read().await;
 
+                #[cfg(feature = "debug-logging")]
         info!("send_batched_update called, requested region: {requested:?}");
 
         // STEP 1: Get copy regions to send (standard VNC protocol: copyRegion sent FIRST)
@@ -839,6 +848,7 @@ impl VncClient {
 
         // If no regions to send at all, nothing to do
         if copy_regions_to_send.is_empty() && modified_regions_to_send.is_empty() {
+                #[cfg(feature = "debug-logging")]
             info!(
                 "No regions to send (copy={}, modified={})",
                 copy_regions_to_send.len(),
@@ -934,6 +944,7 @@ impl VncClient {
             // For CoRRE encoding: split large rectangles into 255x255 tiles
             // (CoRRE uses u8 coordinates, so dimensions must be ≤255)
             if preferred_encoding == ENCODING_CORRE && (region.width > 255 || region.height > 255) {
+                #[cfg(feature = "debug-logging")]
                 info!(
                     "CoRRE: Splitting {}x{} region into 255x255 tiles",
                     region.width, region.height
@@ -945,6 +956,7 @@ impl VncClient {
                     let mut x = 0;
                     while x < region.width {
                         let tile_width = std::cmp::min(255, region.width - x);
+                #[cfg(feature = "debug-logging")]
                         info!(
                             "CoRRE: Encoding tile at ({},{}) size {}x{}",
                             region.x + x,
@@ -1086,6 +1098,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
+                #[cfg(feature = "debug-logging")]
                     info!("Initialized ZLIB compressor with level {compression_level}");
                 }
                 let zlib_comp = zlib_lock.as_mut().unwrap();
@@ -1125,6 +1138,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
+                #[cfg(feature = "debug-logging")]
                     info!("Initialized ZLIBHEX compressor with level {compression_level}");
                 }
                 let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
@@ -1169,6 +1183,7 @@ impl VncClient {
                         Compression::new(u32::from(compression_level)),
                         true,
                     ));
+                #[cfg(feature = "debug-logging")]
                     info!("Initialized ZRLE compressor with level {compression_level}");
                 }
                 let zrle_comp = zrle_lock.as_mut().unwrap();
@@ -1234,6 +1249,7 @@ impl VncClient {
                             Compression::new(u32::from(compression_level)),
                             true,
                         ));
+                #[cfg(feature = "debug-logging")]
                         info!(
                             "Initialized ZRLE compressor for ZYWRLE with level {compression_level}"
                         );
@@ -1373,6 +1389,7 @@ impl VncClient {
         *self.last_update_sent.write().await = Instant::now();
 
         let elapsed = start.elapsed();
+                #[cfg(feature = "debug-logging")]
         info!(
             "Sent {} rects ({} CopyRect + {} encoded, {} pixels total) using {} ({} bytes, {}ms encode+send)",
             total_rects, copy_rect_count, modified_regions_to_send.len(), total_pixels, encoding_name, response.len(), elapsed.as_millis()
@@ -1458,6 +1475,7 @@ impl VncClient {
 /// objects are actually being dropped and their TCP read streams are closing.
 impl Drop for VncClient {
     fn drop(&mut self) {
+        #[cfg(feature = "debug-logging")]
         log::info!(
             "VncClient {} is being dropped (read half will close now)",
             self.client_id
