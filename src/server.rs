@@ -28,7 +28,9 @@
 //! - The framebuffer automatically notifies all clients of screen changes
 //! - Server events (connect/disconnect) are emitted for the application to handle
 
-use log::{error, info};
+use log::error;
+#[cfg(feature = "debug-logging")]
+use log::info;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -172,7 +174,7 @@ impl VncServer {
     #[allow(clippy::cast_possible_truncation)] // Client ID counter limited to u64::MAX, safe on 64-bit platforms
     pub async fn listen(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-        info!("VNC Server listening on port {port}");
+        log::info!("VNC Server listening on port {port}");
 
         loop {
             match listener.accept().await {
@@ -352,7 +354,7 @@ impl VncServer {
 
         let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
-        info!("Client {client_id} disconnected");
+        log::info!("Client {client_id} disconnected");
         Ok(())
     }
 
@@ -488,7 +490,7 @@ impl VncServer {
                             // Set connection metadata for client management APIs
                             client.set_connection_metadata(Some(port));
 
-                            info!("Reverse connection {client_id} established");
+                            log::info!("Reverse connection {client_id} established");
 
                             let client_arc = Arc::new(RwLock::new(client));
 
@@ -567,7 +569,7 @@ impl VncServer {
                             let _ =
                                 server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
-                            info!("Reverse client {client_id} disconnected");
+                            log::info!("Reverse client {client_id} disconnected");
                         }
                         Err(e) => {
                             error!("Failed to initialize VNC client for reverse connection: {e}");
@@ -669,7 +671,7 @@ impl VncServer {
 
             match connection_result {
                 Ok(client) => {
-                    info!("Repeater connection {client_id} established");
+                    log::info!("Repeater connection {client_id} established");
 
                     let client_arc = Arc::new(RwLock::new(client));
 
@@ -745,7 +747,7 @@ impl VncServer {
 
                     let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
-                    info!("Repeater client {client_id} disconnected");
+                    log::info!("Repeater client {client_id} disconnected");
                 }
                 Err(e) => {
                     error!("Failed to connect to repeater: {e}");
