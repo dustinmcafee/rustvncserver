@@ -1035,7 +1035,7 @@ fn write_compact_length(buf: &mut BytesMut, len: usize) {
         buf.put_u8(len as u8);
     } else if len < 16384 {
         buf.put_u8(((len & 0x7F) | 0x80) as u8);
-        buf.put_u8((len >> 7) as u8);
+        buf.put_u8(((len >> 7) & 0x7F) as u8);  // Mask to ensure high bit is clear
     } else {
         buf.put_u8(((len & 0x7F) | 0x80) as u8);
         buf.put_u8((((len >> 7) & 0x7F) | 0x80) as u8);
