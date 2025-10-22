@@ -215,6 +215,81 @@ pub fn put_pixel24(buf: &mut BytesMut, pixel: u32) {
     buf.put_u8(((pixel >> 16) & 0xFF) as u8); // B
 }
 
+/// Translate a single RGB pixel to the client's pixel format for TIGHT encoding.
+/// This properly handles `red_shift`, `green_shift`, `blue_shift` values for
+/// correct pixel format translation.
+///
+/// IMPORTANT: TIGHT encoding uses 24-bit pixel format (3 bytes) when the client has
+/// depth=24 with 8-bit color components, even if `bits_per_pixel=32`. This is a
+/// standard optimization for reducing bandwidth.
+///
+/// Input pixel format: RGB stored in bits 0-23 (R=bits 0-7, G=bits 8-15, B=bits 16-23)
+/// Output: Translated bytes in client's pixel format (3 or 4 bytes depending on format)
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // Intentionally extracting byte components from pixel values
+pub fn translate_pixel_to_client_format(
+    pixel: u32,
+    client_format: &crate::protocol::PixelFormat,
+) -> Vec<u8> {
+    use crate::protocol::PixelFormat;
+    use crate::translate::translate_pixels;
+
+    // Check if we should use 24-bit format (3 bytes) instead of 32-bit (4 bytes)
+    let use_24bit = client_format.depth == 24
+        && client_format.red_max == 255
+        && client_format.green_max == 255
+        && client_format.blue_max == 255;
+
+    if use_24bit {
+        // Send only 3 bytes for 24-bit depth clients (TIGHT optimization)
+        // Match Pack24 behavior exactly: pack pixel then extract using shifts
+
+        // Pack RGB components into client's pixel format
+        let r = (pixel & 0xFF) as u8;
+        let g = ((pixel >> 8) & 0xFF) as u8;
+        let b = ((pixel >> 16) & 0xFF) as u8;
+
+        // Create pixel value using client's bit layout
+        let pixel_value = (u32::from(r) << client_format.red_shift)
+            | (u32::from(g) << client_format.green_shift)
+            | (u32::from(b) << client_format.blue_shift);
+
+        // Extract 3 bytes in the order they appear in memory (like Pack24)
+        // For little-endian with shifts 0/8/16: pixel_value = 0x00BBGGRR
+        // So bytes are [RR, GG, BB] in memory order
+        if client_format.big_endian_flag != 0 {
+            // Big-endian: extract from high to low
+            vec![
+                (pixel_value >> 16) as u8,
+                (pixel_value >> 8) as u8,
+                pixel_value as u8,
+            ]
+        } else {
+            // Little-endian: extract from low to high
+            vec![
+                pixel_value as u8,
+                (pixel_value >> 8) as u8,
+                (pixel_value >> 16) as u8,
+            ]
+        }
+    } else {
+        // Create RGBA32 bytes for this single pixel
+        let rgba_bytes = [
+            (pixel & 0xFF) as u8,         // R
+            ((pixel >> 8) & 0xFF) as u8,  // G
+            ((pixel >> 16) & 0xFF) as u8, // B
+            0,                            // A
+        ];
+
+        // Use existing translation logic to convert to client format
+        let server_format = PixelFormat::rgba32();
+        let translated = translate_pixels(&rgba_bytes, &server_format, client_format);
+
+        // Return as Vec for easier handling
+        translated.to_vec()
+    }
+}
+
 /// Check if all pixels are the same color.
 #[must_use]
 pub fn check_solid_color(pixels: &[u32]) -> Option<u32> {
