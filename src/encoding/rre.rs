@@ -12,15 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC RRE (Rise-and-Run-length Encoding) implementation.
 //!
 //! RRE encodes a rectangle as a background color plus a list of subrectangles
 //! with their own colors. Effective for large solid regions.
 
-use bytes::{BufMut, BytesMut};
+use super::common::{find_subrects, get_background_color, rgba_to_rgb24_pixels};
 use super::Encoding;
-use super::common::{rgba_to_rgb24_pixels, get_background_color, find_subrects};
+use bytes::{BufMut, BytesMut};
 
 /// Implements the VNC "RRE" (Rise-and-Run-length Encoding).
 ///
@@ -30,7 +29,15 @@ use super::common::{rgba_to_rgb24_pixels, get_background_color, find_subrects};
 pub struct RreEncoding;
 
 impl Encoding for RreEncoding {
-    fn encode(&self, data: &[u8], width: u16, height: u16, _quality: u8, _compression: u8) -> BytesMut {
+    #[allow(clippy::cast_possible_truncation)] // Subrectangle count limited to image size per VNC protocol
+    fn encode(
+        &self,
+        data: &[u8],
+        width: u16,
+        height: u16,
+        _quality: u8,
+        _compression: u8,
+    ) -> BytesMut {
         // Convert RGBA to RGB pixels (u32 format: 0RGB)
         let pixels = rgba_to_rgb24_pixels(data);
 
@@ -61,7 +68,7 @@ impl Encoding for RreEncoding {
         // Write subrectangles
         for subrect in subrects {
             buf.put_u32_le(subrect.color); // pixel in client format (little-endian)
-            buf.put_u16(subrect.x);  // protocol coordinates (big-endian)
+            buf.put_u16(subrect.x); // protocol coordinates (big-endian)
             buf.put_u16(subrect.y);
             buf.put_u16(subrect.w);
             buf.put_u16(subrect.h);

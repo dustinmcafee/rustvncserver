@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! Headless VNC server example with animated content.
 //!
 //! This example creates a VNC server that continuously updates the framebuffer
@@ -41,7 +40,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         WIDTH,
         HEIGHT,
         "RustVNC Animated".to_string(),
-        None  // No password
+        None, // No password
     );
 
     // Handle events in background
@@ -95,7 +94,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Update framebuffer
-        framebuffer.update_cropped(&pixels, 0, 0, WIDTH, HEIGHT).await.expect("Failed to update framebuffer");
+        framebuffer
+            .update_cropped(&pixels, 0, 0, WIDTH, HEIGHT)
+            .await
+            .expect("Failed to update framebuffer");
 
         // Next frame
         frame = frame.wrapping_add(1);
@@ -103,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // ~30 FPS
         time::sleep(Duration::from_millis(33)).await;
 
-        if frame % 300 == 0 {
+        if frame.is_multiple_of(300) {
             println!("Frame: {}", frame);
         }
     }

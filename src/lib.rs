@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! # rustvncserver
 //!
 //! A pure Rust implementation of a VNC (Virtual Network Computing) server.
@@ -24,14 +23,14 @@
 //!
 //! ## Features
 //!
-//! - **11 encoding types**: Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, ZlibHex,
-//!   Tight, TightPng, ZRLE, ZYWRLE
+//! - **11 encoding types**: Raw, `CopyRect`, RRE, `CoRRE`, Hextile, Zlib, `ZlibHex`,
+//!   Tight, `TightPng`, ZRLE, ZYWRLE
 //! - **All pixel formats**: 8/16/24/32-bit color depths
 //! - **Tight encoding**: All 5 production modes (solid fill, mono rect, indexed
 //!   palette, full-color zlib, JPEG)
 //! - **Async I/O**: Built on Tokio for efficient concurrent client handling
 //! - **Memory safe**: Pure Rust with zero unsafe code in core logic
-//! - **Optional TurboJPEG**: Hardware-accelerated JPEG compression via feature flag
+//! - **Optional `TurboJPEG`**: Hardware-accelerated JPEG compression via feature flag
 //!
 //! ## Quick Start
 //!
@@ -108,30 +107,31 @@
 //! └─────────────────────────────────────────┘
 //! ```
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![warn(clippy::all)]
+#![warn(clippy::pedantic)]
 
 pub mod error;
 pub mod events;
+pub mod framebuffer;
 pub mod protocol;
 pub mod server;
-pub mod framebuffer;
 
 // Internal modules
-mod client;
 mod auth;
-mod repeater;
-mod translate;
+mod client;
 pub mod encoding;
 pub mod jpeg;
+mod repeater;
+mod translate;
 
 // Re-exports
-pub use error::{VncError, Result};
+pub use encoding::Encoding;
+pub use error::{Result, VncError};
 pub use events::ServerEvent;
-pub use server::VncServer;
 pub use framebuffer::Framebuffer;
 pub use protocol::PixelFormat;
-pub use encoding::Encoding;
+pub use server::VncServer;
 
 #[cfg(feature = "turbojpeg")]
 pub use jpeg::TurboJpegEncoder;

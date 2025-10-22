@@ -2,8 +2,49 @@
 
 A pure Rust VNC (Virtual Network Computing) server library with complete RFB protocol support.
 
+[![Crates.io](https://img.shields.io/crates/v/rustvncserver.svg)](https://crates.io/crates/rustvncserver)
+[![Documentation](https://docs.rs/rustvncserver/badge.svg)](https://docs.rs/rustvncserver)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Rust](https://img.shields.io/badge/rust-1.76%2B-orange.svg)](https://www.rust-lang.org/)
+[![Build Status](https://github.com/dustinmcafee/rustvncserver/workflows/CI/badge.svg)](https://github.com/dustinmcafee/rustvncserver/actions)
+[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
+[![Downloads](https://img.shields.io/crates/d/rustvncserver.svg)](https://crates.io/crates/rustvncserver)
+
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Dustin%20McAfee-blue?style=flat&logo=linkedin)](https://www.linkedin.com/in/dustinmcafee/)
+
+**Support this project:**
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-❤-red?style=flat&logo=github-sponsors)](https://github.com/sponsors/dustinmcafee)
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue?style=flat&logo=paypal)](https://paypal.me/dustinmcafee)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-☕-yellow?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/dustinmcafee)
+[![Bitcoin](https://img.shields.io/badge/Bitcoin-₿-orange?style=flat&logo=bitcoin)](#crypto-donations)
+[![Ethereum](https://img.shields.io/badge/Ethereum-Ξ-blue?style=flat&logo=ethereum)](#crypto-donations)
+[![Solana](https://img.shields.io/badge/Solana-◎-purple?style=flat&logo=solana)](#crypto-donations)
+[![Monero](https://img.shields.io/badge/Monero-XMR-grey?style=flat&logo=monero)](#crypto-donations)
+
+<details>
+<summary id="crypto-donations">💰 Crypto Donations</summary>
+
+**Bitcoin (BTC)**
+```
+3QVD3H1ryqyxhuf8hNTTuBXSbczNuAKaM8
+```
+
+**Ethereum (ETH)**
+```
+0xaFE28A1Dd57660610Ef46C05EfAA363356e98DC7
+```
+
+**Solana (SOL)**
+```
+6uWx4wuHERBpNxyWjeQKrMLBVte91aBzkHaJb8rhw4rn
+```
+
+**Monero (XMR)**
+```
+8C5aCs7Api3WE67GMw54AhQKnJsCg6CVffCuPxUcaKoiMrnaicyvDch8M2CXTm1DJqhpHKxtLvum9Thw4yHn8zeu7sj8qmC
+```
+
+</details>
 
 ## Features
 
@@ -55,7 +96,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustvncserver = "1.0"
+rustvncserver = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -63,7 +104,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ```toml
 [dependencies]
-rustvncserver = { version = "1.0", features = ["turbojpeg"] }
+rustvncserver = { version = "1.1", features = ["turbojpeg"] }
 ```
 
 **Features:**

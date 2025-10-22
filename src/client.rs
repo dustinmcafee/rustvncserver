@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC client connection handling and protocol implementation.
 //!
 //! This module manages individual VNC client sessions, handling:
@@ -35,25 +34,33 @@
 //! - **Rate Limiting**: Prevents overwhelming clients with excessive update frequency
 
 use bytes::{Buf, BufMut, BytesMut};
+use flate2::Compress;
+use flate2::Compression;
+use flate2::FlushCompress;
+use log::{error, info};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use tokio::sync::RwLock;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use log::{info, error};
-use flate2::Compress;
-use flate2::Compression;
-use flate2::FlushCompress;
+use tokio::sync::RwLock;
 
-use crate::protocol::*;
-use crate::framebuffer::{Framebuffer, DirtyRegion};
 use crate::auth::VncAuth;
 use crate::encoding;
 use crate::encoding::tight::TightStreamCompressor;
+use crate::framebuffer::{DirtyRegion, Framebuffer};
+use crate::protocol::{
+    PixelFormat, Rectangle, ServerInit, CLIENT_MSG_CLIENT_CUT_TEXT,
+    CLIENT_MSG_FRAMEBUFFER_UPDATE_REQUEST, CLIENT_MSG_KEY_EVENT, CLIENT_MSG_POINTER_EVENT,
+    CLIENT_MSG_SET_ENCODINGS, CLIENT_MSG_SET_PIXEL_FORMAT, ENCODING_COMPRESS_LEVEL_0,
+    ENCODING_COMPRESS_LEVEL_9, ENCODING_COPYRECT, ENCODING_CORRE, ENCODING_HEXTILE,
+    ENCODING_QUALITY_LEVEL_0, ENCODING_QUALITY_LEVEL_9, ENCODING_RAW, ENCODING_RRE, ENCODING_TIGHT,
+    ENCODING_TIGHTPNG, ENCODING_ZLIB, ENCODING_ZLIBHEX, ENCODING_ZRLE, ENCODING_ZYWRLE,
+    PROTOCOL_VERSION, SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, SECURITY_TYPE_NONE,
+    SECURITY_TYPE_VNC_AUTH, SERVER_MSG_FRAMEBUFFER_UPDATE, SERVER_MSG_SERVER_CUT_TEXT,
+};
 use crate::translate;
-
 
 /// Represents various events that a VNC client can send to the server.
 /// These events typically correspond to user interactions like keyboard input,
@@ -96,7 +103,7 @@ struct TightZlibStreams {
 }
 
 impl TightZlibStreams {
-    /// Creates a new TightZlibStreams with all streams uninitialized.
+    /// Creates a new `TightZlibStreams` with all streams uninitialized.
     fn new() -> Self {
         Self {
             streams: [None, None, None, None],
@@ -123,7 +130,7 @@ impl TightZlibStreams {
 
         if !self.active[stream_id] {
             // Initialize stream on first use
-            self.streams[stream_id] = Some(Compress::new(Compression::new(level as u32), true));
+            self.streams[stream_id] = Some(Compress::new(Compression::new(u32::from(level)), true));
             self.active[stream_id] = true;
             self.levels[stream_id] = level;
         } else if self.levels[stream_id] != level {
@@ -136,7 +143,8 @@ impl TightZlibStreams {
                 stream.reset();
                 // Unfortunately, we can't change compression level without recreating
                 // So we'll recreate the stream (dictionary will be rebuilt)
-                self.streams[stream_id] = Some(Compress::new(Compression::new(level as u32), true));
+                self.streams[stream_id] =
+                    Some(Compress::new(Compression::new(u32::from(level)), true));
                 self.levels[stream_id] = level;
             }
         }
@@ -144,9 +152,9 @@ impl TightZlibStreams {
         self.streams[stream_id].as_mut().unwrap()
     }
 
-    /// Compresses data using the specified stream with Z_SYNC_FLUSH.
+    /// Compresses data using the specified stream with `Z_SYNC_FLUSH`.
     ///
-    /// Uses Z_SYNC_FLUSH to maintain the dictionary state for subsequent compressions
+    /// Uses `Z_SYNC_FLUSH` to maintain the dictionary state for subsequent compressions
     /// per RFC 6143 Tight encoding specification.
     ///
     /// # Arguments
@@ -156,6 +164,7 @@ impl TightZlibStreams {
     ///
     /// # Returns
     /// Compressed data, or error if compression fails
+    #[allow(clippy::cast_possible_truncation)] // Zlib total_out limited to buffer size, safe to truncate
     fn compress(&mut self, stream_id: usize, level: u8, input: &[u8]) -> Result<Vec<u8>, String> {
         let stream = self.get_or_init_stream(stream_id, level);
 
@@ -163,29 +172,30 @@ impl TightZlibStreams {
         let mut output = vec![0u8; input.len() + 64];
 
         // Compress with Z_SYNC_FLUSH to preserve dictionary
-        stream.reset();  // Reset before each use to clear any leftover state
+        stream.reset(); // Reset before each use to clear any leftover state
         let before_out = stream.total_out();
 
         match stream.compress(input, &mut output, FlushCompress::Sync) {
-            Ok(flate2::Status::Ok) | Ok(flate2::Status::StreamEnd) => {
+            Ok(flate2::Status::Ok | flate2::Status::StreamEnd) => {
                 let total_out = (stream.total_out() - before_out) as usize;
                 output.truncate(total_out);
                 Ok(output)
             }
-            Ok(flate2::Status::BufError) => {
-                Err("Compression buffer error".to_string())
-            }
-            Err(e) => {
-                Err(format!("Compression failed: {}", e))
-            }
+            Ok(flate2::Status::BufError) => Err("Compression buffer error".to_string()),
+            Err(e) => Err(format!("Compression failed: {e}")),
         }
     }
 }
 
-/// Implement TightStreamCompressor trait for TightZlibStreams.
+/// Implement `TightStreamCompressor` trait for `TightZlibStreams`.
 /// This allows the tight encoding module to use our stream manager.
 impl TightStreamCompressor for TightZlibStreams {
-    fn compress_tight_stream(&mut self, stream_id: u8, level: u8, input: &[u8]) -> Result<Vec<u8>, String> {
+    fn compress_tight_stream(
+        &mut self,
+        stream_id: u8,
+        level: u8,
+        input: &[u8],
+    ) -> Result<Vec<u8>, String> {
         self.compress(stream_id as usize, level, input)
     }
 }
@@ -230,9 +240,9 @@ pub struct VncClient {
     /// The region specifically requested by the client for an update, protected by a `RwLock`.
     /// It is written by the message handler and read by the encoder.
     requested_region: RwLock<Option<DirtyRegion>>, // Protected - written by message handler, read by encoder
-    /// CopyRect tracking (standard VNC protocol style): destination regions to be copied
+    /// `CopyRect` tracking (standard VNC protocol style): destination regions to be copied
     copy_region: Arc<RwLock<Vec<DirtyRegion>>>, // Destination regions for CopyRect
-    /// Translation vector for CopyRect: (dx, dy) where src = dest + (dx, dy)
+    /// Translation vector for `CopyRect`: (dx, dy) where src = dest + (dx, dy)
     copy_offset: RwLock<Option<(i16, i16)>>, // (dx, dy) translation for copy operations
     /// The duration to defer sending updates, matching `standard VNC protocol`'s default.
     defer_update_time: Duration, // Constant - set once at init
@@ -247,20 +257,20 @@ pub struct VncClient {
     /// preventing interleaved writes from concurrent tasks.
     send_mutex: Arc<tokio::sync::Mutex<()>>,
     /// Persistent zlib compressor for Zlib encoding (RFC 6143: one stream per connection).
-    /// Protected by RwLock since encoding happens during send_batched_update.
+    /// Protected by `RwLock` since encoding happens during `send_batched_update`.
     zlib_compressor: RwLock<Option<Compress>>,
-    /// Persistent zlib compressor for ZlibHex encoding (RFC 6143: one stream per connection).
-    /// Protected by RwLock since encoding happens during send_batched_update.
+    /// Persistent zlib compressor for `ZlibHex` encoding (RFC 6143: one stream per connection).
+    /// Protected by `RwLock` since encoding happens during `send_batched_update`.
     zlibhex_compressor: RwLock<Option<Compress>>,
     /// Persistent zlib compressor for ZRLE encoding (RFC 6143: one stream per connection).
-    /// Protected by RwLock since encoding happens during send_batched_update.
+    /// Protected by `RwLock` since encoding happens during `send_batched_update`.
     #[allow(dead_code)]
     zrle_compressor: RwLock<Option<Compress>>,
     /// ZYWRLE quality level (0 = disabled, 1-3 = quality levels, higher = better quality).
-    /// Stored as AtomicU8 for atomic access. Updated based on client's quality setting.
+    /// Stored as `AtomicU8` for atomic access. Updated based on client's quality setting.
     zywrle_level: AtomicU8, // Atomic - updated when ZYWRLE encoding is detected
     /// Persistent zlib compression streams for Tight encoding (4 streams with dictionaries).
-    /// Protected by RwLock since encoding happens during send_batched_update.
+    /// Protected by `RwLock` since encoding happens during `send_batched_update`.
     tight_zlib_streams: RwLock<TightZlibStreams>,
     /// Remote host address (IP:port) of the connected client
     remote_host: String,
@@ -302,9 +312,9 @@ impl VncClient {
         event_tx: mpsc::UnboundedSender<ClientEvent>,
     ) -> Result<Self, std::io::Error> {
         // Capture remote host address before handshake
-        let remote_host = stream.peer_addr()
-            .map(|addr| addr.to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
+        let remote_host = stream
+            .peer_addr()
+            .map_or_else(|_| "unknown".to_string(), |addr| addr.to_string());
 
         // Disable Nagle's algorithm for immediate frame delivery
         stream.set_nodelay(true)?;
@@ -350,7 +360,6 @@ impl VncClient {
                     "VNC authentication failed",
                 ));
             }
-
         } else if sec_type[0] == SECURITY_TYPE_NONE {
             let mut buf = BytesMut::with_capacity(4);
             buf.put_u32(SECURITY_RESULT_OK);
@@ -388,16 +397,16 @@ impl VncClient {
             encodings: RwLock::new(vec![ENCODING_RAW]),
             event_tx,
             last_update_sent: RwLock::new(creation_time),
-            jpeg_quality: AtomicU8::new(80), // Default quality
+            jpeg_quality: AtomicU8::new(80),     // Default quality
             compression_level: AtomicU8::new(6), // Default zlib compression (balanced)
-            quality_level: AtomicU8::new(255), // 255 = unset (use JPEG by default)
+            quality_level: AtomicU8::new(255),   // 255 = unset (use JPEG by default)
             continuous_updates: AtomicBool::new(false),
             modified_regions: Arc::new(RwLock::new(Vec::new())),
             requested_region: RwLock::new(None),
             copy_region: Arc::new(RwLock::new(Vec::new())), // Initialize empty copy region
-            copy_offset: RwLock::new(None), // No copy offset initially
-            defer_update_time: Duration::from_millis(5), // Match standard VNC protocol default
-            start_deferring_nanos: AtomicU64::new(0), // 0 = not deferring
+            copy_offset: RwLock::new(None),                 // No copy offset initially
+            defer_update_time: Duration::from_millis(5),    // Match standard VNC protocol default
+            start_deferring_nanos: AtomicU64::new(0),       // 0 = not deferring
             creation_time,
             max_rects_per_update: 50, // Match standard VNC protocol default
             send_mutex: Arc::new(tokio::sync::Mutex::new(())),
@@ -408,7 +417,7 @@ impl VncClient {
             tight_zlib_streams: RwLock::new(TightZlibStreams::new()), // 4 persistent streams for Tight encoding
             remote_host,
             destination_port: None, // None for direct inbound connections
-            repeater_id: None, // None for direct inbound connections
+            repeater_id: None,      // None for direct inbound connections
             client_id,
         })
     }
@@ -439,15 +448,15 @@ impl VncClient {
 
     /// Schedules a copy operation for this client (standard VNC protocol style).
     ///
-    /// This method adds a region to be sent using CopyRect encoding with the specified offset.
+    /// This method adds a region to be sent using `CopyRect` encoding with the specified offset.
     /// According to standard VNC protocol's algorithm, if a copy operation with a different offset
     /// already exists, the old copy region is treated as modified.
     ///
     /// # Arguments
     ///
     /// * `region` - The destination region to be copied.
-    /// * `dx` - The X offset from destination to source (src_x = dest_x + dx).
-    /// * `dy` - The Y offset from destination to source (src_y = dest_y + dy).
+    /// * `dx` - The X offset from destination to source (`src_x` = `dest_x` + dx).
+    /// * `dy` - The Y offset from destination to source (`src_y` = `dest_y` + dy).
     pub async fn schedule_copy_region(&self, region: DirtyRegion, dx: i16, dy: i16) {
         let mut copy_regions = self.copy_region.write().await;
         let mut copy_offset = self.copy_offset.write().await;
@@ -468,7 +477,7 @@ impl VncClient {
         *copy_offset = Some((dx, dy));
     }
 
-    /// Enters the main message loop for the VncClient, handling incoming data from the client
+    /// Enters the main message loop for the `VncClient`, handling incoming data from the client
     /// and periodically sending framebuffer updates.
     ///
     /// This function continuously reads from the client's `TcpStream` and processes VNC messages
@@ -481,7 +490,15 @@ impl VncClient {
     ///
     /// `Ok(())` if the client disconnects gracefully.
     /// Returns `Err(std::io::Error)` if an I/O error occurs or an invalid message is received.
+    #[allow(clippy::too_many_lines)] // VNC protocol message handler requires complete state machine
+    #[allow(clippy::cast_possible_truncation)] // VNC protocol message fields use u8/u16/u32 as specified in RFC 6143
+    #[allow(clippy::cast_sign_loss)] // VNC pseudo-encoding values are negative i32, converted to positive u8/u16 offsets
     pub async fn handle_messages(&mut self) -> Result<(), std::io::Error> {
+        // Use standard VNC quality mapping (TigerVNC compatible)
+        const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
+        // Limit clipboard size to prevent memory exhaustion attacks
+        const MAX_CUT_TEXT: usize = 10 * 1024 * 1024; // 10MB limit
+
         let mut buf = BytesMut::with_capacity(4096);
         let mut check_interval = tokio::time::interval(tokio::time::Duration::from_millis(16)); // Check for updates ~60 times/sec
 
@@ -562,12 +579,10 @@ impl VncClient {
                                     if (ENCODING_QUALITY_LEVEL_0..=ENCODING_QUALITY_LEVEL_9).contains(&encoding) {
                                         // -32 = level 0 (lowest), -23 = level 9 (highest)
                                         let quality_level = (encoding - ENCODING_QUALITY_LEVEL_0) as u8;
-                                        // Use standard VNC quality mapping (TigerVNC compatible)
-                                        const TIGHT2TURBO_QUAL: [u8; 10] = [15, 29, 41, 42, 62, 77, 79, 86, 92, 100];
                                         let quality = TIGHT2TURBO_QUAL[quality_level as usize];
                                         self.jpeg_quality.store(quality, Ordering::Relaxed);
                                         self.quality_level.store(quality_level, Ordering::Relaxed); // Store VNC quality level
-                                        info!("Client requested quality level {}, using JPEG quality {}", quality_level, quality);
+                                        info!("Client requested quality level {quality_level}, using JPEG quality {quality}");
                                     }
 
                                     // Check for compression level pseudo-encodings (-256 to -247)
@@ -576,11 +591,11 @@ impl VncClient {
                                         let compression_level = (encoding - ENCODING_COMPRESS_LEVEL_0) as u8;
                                         // Use compression level directly (0=fastest, 9=best compression)
                                         self.compression_level.store(compression_level, Ordering::Relaxed);
-                                        info!("Client requested compression level {}, using zlib level {}", compression_level, compression_level);
+                                        info!("Client requested compression level {compression_level}, using zlib level {compression_level}");
                                     }
                                 }
-                                *self.encodings.write().await = encodings_list.clone();
-                                info!("Client set {} encodings: {:?}", count, encodings_list);
+                                self.encodings.write().await.clone_from(&encodings_list);
+                                info!("Client set {count} encodings: {encodings_list:?}");
                             }
                             CLIENT_MSG_FRAMEBUFFER_UPDATE_REQUEST => {
                                 if buf.len() < 10 { // 1 + 1 incremental + 8 (x, y, w, h)
@@ -593,7 +608,7 @@ impl VncClient {
                                 let width = buf.get_u16();
                                 let height = buf.get_u16();
 
-                                info!("FramebufferUpdateRequest: incremental={}, region=({},{} {}x{})", incremental, x, y, width, height);
+                                info!("FramebufferUpdateRequest: incremental={incremental}, region=({x},{y} {width}x{height})");
 
                                 // Track requested region (standard VNC protocol cl->requestedRegion)
                                 *self.requested_region.write().await = Some(DirtyRegion::new(x, y, width, height));
@@ -660,10 +675,8 @@ impl VncClient {
                                 buf.advance(3); // padding
                                 let length = buf.get_u32() as usize;
 
-                                // Limit clipboard size to prevent memory exhaustion attacks
-                                const MAX_CUT_TEXT: usize = 10 * 1024 * 1024; // 10MB limit
                                 if length > MAX_CUT_TEXT {
-                                    error!("Cut text too large: {} bytes (max {}), disconnecting client", length, MAX_CUT_TEXT);
+                                    error!("Cut text too large: {length} bytes (max {MAX_CUT_TEXT}), disconnecting client");
                                     let _ = self.event_tx.send(ClientEvent::Disconnected);
                                     return Err(std::io::Error::new(
                                         std::io::ErrorKind::InvalidData,
@@ -680,11 +693,11 @@ impl VncClient {
                                 }
                             }
                             _ => {
-                                error!("Unknown message type: {}, disconnecting client", msg_type);
+                                error!("Unknown message type: {msg_type}, disconnecting client");
                                 let _ = self.event_tx.send(ClientEvent::Disconnected);
                                 return Err(std::io::Error::new(
                                     std::io::ErrorKind::InvalidData,
-                                    format!("Unknown message type: {}", msg_type)
+                                    format!("Unknown message type: {msg_type}")
                                 ));
                             }
                         }
@@ -699,7 +712,9 @@ impl VncClient {
                         // Regions are already pushed to us by framebuffer (no merge needed!)
                         let should_send = {
                             let regions = self.modified_regions.read().await;
-                            if !regions.is_empty() {
+                            if regions.is_empty() {
+                                false
+                            } else {
                                 let defer_nanos = self.start_deferring_nanos.load(Ordering::Relaxed);
                                 if defer_nanos == 0 {
                                     // Not currently deferring, start now
@@ -717,8 +732,6 @@ impl VncClient {
 
                                     elapsed >= self.defer_update_time && time_since_last >= min_interval
                                 }
-                            } else {
-                                false
                             }
                         };
 
@@ -734,8 +747,8 @@ impl VncClient {
     /// Sends a batched framebuffer update message to the client.
     ///
     /// This function implements standard VNC protocol's update sending algorithm:
-    /// 1. Send CopyRect regions first (from copy_region with stored offset)
-    /// 2. Then send modified regions (from modified_regions)
+    /// 1. Send `CopyRect` regions first (from `copy_region` with stored offset)
+    /// 2. Then send modified regions (from `modified_regions`)
     ///
     /// The update includes multiple rectangles in a single message to improve efficiency.
     ///
@@ -743,11 +756,13 @@ impl VncClient {
     ///
     /// A `Result` which is `Ok(())` on successful transmission of the update, or
     /// `Err(std::io::Error)` if an I/O error occurs during encoding or sending.
+    #[allow(clippy::too_many_lines)] // VNC framebuffer update encoding requires handling all encoding types
+    #[allow(clippy::cast_possible_truncation)] // VNC protocol rectangle headers use u16 dimensions
     async fn send_batched_update(&mut self) -> Result<(), std::io::Error> {
         // Get requested region (standard VNC protocol: requestedRegion)
         let requested = *self.requested_region.read().await;
 
-        info!("send_batched_update called, requested region: {:?}", requested);
+        info!("send_batched_update called, requested region: {requested:?}");
 
         // STEP 1: Get copy regions to send (standard VNC protocol: copyRegion sent FIRST)
         let (copy_regions_to_send, copy_src_offset): (Vec<DirtyRegion>, Option<(i16, i16)>) = {
@@ -792,7 +807,9 @@ impl VncClient {
                 Vec::new()
             } else {
                 // Calculate how many regions we can send
-                let remaining_slots = self.max_rects_per_update.saturating_sub(copy_regions_to_send.len());
+                let remaining_slots = self
+                    .max_rects_per_update
+                    .saturating_sub(copy_regions_to_send.len());
                 let num_rects = regions.len().min(remaining_slots);
 
                 if let Some(req) = requested {
@@ -822,7 +839,11 @@ impl VncClient {
 
         // If no regions to send at all, nothing to do
         if copy_regions_to_send.is_empty() && modified_regions_to_send.is_empty() {
-            info!("No regions to send (copy={}, modified={})", copy_regions_to_send.len(), modified_regions_to_send.len());
+            info!(
+                "No regions to send (copy={}, modified={})",
+                copy_regions_to_send.len(),
+                modified_regions_to_send.len()
+            );
             return Ok(());
         }
 
@@ -841,8 +862,8 @@ impl VncClient {
         for region in &modified_regions_to_send {
             if preferred_encoding == ENCODING_CORRE && (region.width > 255 || region.height > 255) {
                 // Count how many tiles this region will be split into
-                let num_tiles_x = ((region.width + 254) / 255) as usize;
-                let num_tiles_y = ((region.height + 254) / 255) as usize;
+                let num_tiles_x = region.width.div_ceil(255) as usize;
+                let num_tiles_y = region.height.div_ceil(255) as usize;
                 total_rects += num_tiles_x * num_tiles_y;
             } else {
                 total_rects += 1;
@@ -882,8 +903,12 @@ impl VncClient {
             for region in &copy_regions_to_send {
                 // Calculate source position from destination + offset
                 // In standard VNC protocol: src = dest + (dx, dy)
-                let src_x = (region.x as i32 + dx as i32) as u16;
-                let src_y = (region.y as i32 + dy as i32) as u16;
+                #[allow(clippy::cast_sign_loss)]
+                // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
+                let src_x = (i32::from(region.x) + i32::from(dx)) as u16;
+                #[allow(clippy::cast_sign_loss)]
+                // CopyRect offset calculation: dx/dy are i16, sum guaranteed positive
+                let src_y = (i32::from(region.y) + i32::from(dy)) as u16;
 
                 // Use CopyRect encoding
                 let rect = Rectangle {
@@ -899,18 +924,20 @@ impl VncClient {
                 response.put_u16(src_x);
                 response.put_u16(src_y);
 
-                total_pixels += (region.width as u64) * (region.height as u64);
+                total_pixels += u64::from(region.width) * u64::from(region.height);
                 copy_rect_count += 1;
             }
         }
 
         // STEP 2: Send modified regions (standard VNC protocol: sent AFTER copy regions)
         for region in &modified_regions_to_send {
-
             // For CoRRE encoding: split large rectangles into 255x255 tiles
             // (CoRRE uses u8 coordinates, so dimensions must be ≤255)
             if preferred_encoding == ENCODING_CORRE && (region.width > 255 || region.height > 255) {
-                info!("CoRRE: Splitting {}x{} region into 255x255 tiles", region.width, region.height);
+                info!(
+                    "CoRRE: Splitting {}x{} region into 255x255 tiles",
+                    region.width, region.height
+                );
                 // Split rectangle into tiles ≤255x255 per RFC 6143 CoRRE specification
                 let mut y = 0;
                 while y < region.height {
@@ -918,16 +945,30 @@ impl VncClient {
                     let mut x = 0;
                     while x < region.width {
                         let tile_width = std::cmp::min(255, region.width - x);
-                        info!("CoRRE: Encoding tile at ({},{}) size {}x{}", region.x + x, region.y + y, tile_width, tile_height);
+                        info!(
+                            "CoRRE: Encoding tile at ({},{}) size {}x{}",
+                            region.x + x,
+                            region.y + y,
+                            tile_width,
+                            tile_height
+                        );
 
                         // Get pixel data for this tile
-                        let tile_pixel_data = match self.framebuffer.get_rect(
-                            region.x + x, region.y + y, tile_width, tile_height
-                        ).await {
+                        let tile_pixel_data = match self
+                            .framebuffer
+                            .get_rect(region.x + x, region.y + y, tile_width, tile_height)
+                            .await
+                        {
                             Ok(data) => data,
                             Err(e) => {
-                                error!("Failed to get rectangle ({}, {}, {}, {}): {}",
-                                       region.x + x, region.y + y, tile_width, tile_height, e);
+                                error!(
+                                    "Failed to get rectangle ({}, {}, {}, {}): {}",
+                                    region.x + x,
+                                    region.y + y,
+                                    tile_width,
+                                    tile_height,
+                                    e
+                                );
                                 x += tile_width;
                                 continue;
                             }
@@ -935,7 +976,13 @@ impl VncClient {
 
                         // Encode this tile with CoRRE
                         if let Some(encoder) = encoding::get_encoder(ENCODING_CORRE) {
-                            let encoded = encoder.encode(&tile_pixel_data, tile_width, tile_height, jpeg_quality, compression_level);
+                            let encoded = encoder.encode(
+                                &tile_pixel_data,
+                                tile_width,
+                                tile_height,
+                                jpeg_quality,
+                                compression_level,
+                            );
 
                             // Calculate nSubrects from encoded buffer size
                             // Encoder returns: bgColor(4) + subrects, each subrect is 8 bytes
@@ -962,7 +1009,7 @@ impl VncClient {
                             // Write encoder output (background color + subrectangle data)
                             response.extend_from_slice(&encoded);
 
-                            total_pixels += (tile_width as u64) * (tile_height as u64);
+                            total_pixels += u64::from(tile_width) * u64::from(tile_height);
                         }
 
                         x += tile_width;
@@ -973,11 +1020,17 @@ impl VncClient {
             }
 
             // Get pixel data
-            let pixel_data = match self.framebuffer.get_rect(region.x, region.y, region.width, region.height).await {
+            let pixel_data = match self
+                .framebuffer
+                .get_rect(region.x, region.y, region.width, region.height)
+                .await
+            {
                 Ok(data) => data,
                 Err(e) => {
-                    error!("Failed to get rectangle ({}, {}, {}, {}): {}",
-                           region.x, region.y, region.width, region.height, e);
+                    error!(
+                        "Failed to get rectangle ({}, {}, {}, {}): {}",
+                        region.x, region.y, region.width, region.height, e
+                    );
                     continue; // Skip this invalid rectangle
                 }
             };
@@ -992,48 +1045,55 @@ impl VncClient {
                 // Just translate and send directly, no additional processing
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    let mut buf = BytesMut::with_capacity(
+                        (region.width as usize * region.height as usize) * 4,
+                    );
                     for chunk in pixel_data.chunks_exact(4) {
                         buf.put_u8(chunk[0]); // R
                         buf.put_u8(chunk[1]); // G
                         buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0);        // Padding (not alpha)
+                        buf.put_u8(0); // Padding (not alpha)
                     }
                     buf
                 } else {
                     // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
                 };
                 (ENCODING_RAW, translated)
             } else if preferred_encoding == ENCODING_ZLIB {
                 // Translate pixels to client format first
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    let mut buf = BytesMut::with_capacity(
+                        (region.width as usize * region.height as usize) * 4,
+                    );
                     for chunk in pixel_data.chunks_exact(4) {
                         buf.put_u8(chunk[0]); // R
                         buf.put_u8(chunk[1]); // G
                         buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0);        // Padding (not alpha)
+                        buf.put_u8(0); // Padding (not alpha)
                     }
                     buf
                 } else {
                     // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
                 };
 
                 // Initialize ZLIB compressor lazily on first use
                 let mut zlib_lock = self.zlib_compressor.write().await;
                 if zlib_lock.is_none() {
-                    *zlib_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
-                    info!("Initialized ZLIB compressor with level {}", compression_level);
+                    *zlib_lock = Some(Compress::new(
+                        Compression::new(u32::from(compression_level)),
+                        true,
+                    ));
+                    info!("Initialized ZLIB compressor with level {compression_level}");
                 }
                 let zlib_comp = zlib_lock.as_mut().unwrap();
 
                 match encoding::encode_zlib_persistent(&translated, zlib_comp) {
                     Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
                     Err(e) => {
-                        error!("ZLIB encoding failed: {}, falling back to RAW", e);
+                        error!("ZLIB encoding failed: {e}, falling back to RAW");
                         encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
@@ -1043,31 +1103,41 @@ impl VncClient {
                 // Translate pixels to client format first
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    let mut buf = BytesMut::with_capacity(
+                        (region.width as usize * region.height as usize) * 4,
+                    );
                     for chunk in pixel_data.chunks_exact(4) {
                         buf.put_u8(chunk[0]); // R
                         buf.put_u8(chunk[1]); // G
                         buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0);        // Padding (not alpha)
+                        buf.put_u8(0); // Padding (not alpha)
                     }
                     buf
                 } else {
                     // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
                 };
 
                 // Initialize ZLIBHEX compressor lazily on first use
                 let mut zlibhex_lock = self.zlibhex_compressor.write().await;
                 if zlibhex_lock.is_none() {
-                    *zlibhex_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
-                    info!("Initialized ZLIBHEX compressor with level {}", compression_level);
+                    *zlibhex_lock = Some(Compress::new(
+                        Compression::new(u32::from(compression_level)),
+                        true,
+                    ));
+                    info!("Initialized ZLIBHEX compressor with level {compression_level}");
                 }
                 let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
 
-                match encoding::encode_zlibhex_persistent(&translated, region.width, region.height, zlibhex_comp) {
+                match encoding::encode_zlibhex_persistent(
+                    &translated,
+                    region.width,
+                    region.height,
+                    zlibhex_comp,
+                ) {
                     Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
                     Err(e) => {
-                        error!("ZLIBHEX encoding failed: {}, falling back to RAW", e);
+                        error!("ZLIBHEX encoding failed: {e}, falling back to RAW");
                         encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
@@ -1077,32 +1147,43 @@ impl VncClient {
                 // Translate pixels to client format first
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    let mut buf = BytesMut::with_capacity(
+                        (region.width as usize * region.height as usize) * 4,
+                    );
                     for chunk in pixel_data.chunks_exact(4) {
                         buf.put_u8(chunk[0]); // R
                         buf.put_u8(chunk[1]); // G
                         buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0);        // Padding (not alpha)
+                        buf.put_u8(0); // Padding (not alpha)
                     }
                     buf
                 } else {
                     // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
                 };
 
                 // Initialize ZRLE compressor lazily on first use
                 let mut zrle_lock = self.zrle_compressor.write().await;
                 if zrle_lock.is_none() {
-                    *zrle_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
-                    info!("Initialized ZRLE compressor with level {}", compression_level);
+                    *zrle_lock = Some(Compress::new(
+                        Compression::new(u32::from(compression_level)),
+                        true,
+                    ));
+                    info!("Initialized ZRLE compressor with level {compression_level}");
                 }
                 let zrle_comp = zrle_lock.as_mut().unwrap();
 
                 // Use client's pixel format for encoding
-                match encoding::encode_zrle_persistent(&translated, region.width, region.height, &*client_pixel_format, zrle_comp) {
+                match encoding::encode_zrle_persistent(
+                    &translated,
+                    region.width,
+                    region.height,
+                    &client_pixel_format,
+                    zrle_comp,
+                ) {
                     Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
                     Err(e) => {
-                        error!("ZRLE encoding failed: {}, falling back to RAW", e);
+                        error!("ZRLE encoding failed: {e}, falling back to RAW");
                         encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
@@ -1122,37 +1203,54 @@ impl VncClient {
                     region.width as usize,
                     region.height as usize,
                     level,
-                    &mut coeff_buf
+                    &mut coeff_buf,
                 ) {
                     // Translate the wavelet-transformed data to client format
                     let translated = if client_pixel_format.is_compatible_with_rgba32() {
                         // Fast path: no translation, but still need to strip alpha
-                        let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                        let mut buf = BytesMut::with_capacity(
+                            (region.width as usize * region.height as usize) * 4,
+                        );
                         for chunk in transformed_data.chunks_exact(4) {
                             buf.put_u8(chunk[0]); // R
                             buf.put_u8(chunk[1]); // G
                             buf.put_u8(chunk[2]); // B
-                            buf.put_u8(0);        // Padding (not alpha)
+                            buf.put_u8(0); // Padding (not alpha)
                         }
                         buf
                     } else {
                         // Translate from server format (RGBA32) to client's requested format
-                        translate::translate_pixels(&transformed_data, &server_format, &*client_pixel_format)
+                        translate::translate_pixels(
+                            &transformed_data,
+                            &server_format,
+                            &client_pixel_format,
+                        )
                     };
 
                     // Now encode the translated data with ZRLE (shares the ZRLE compressor)
                     let mut zrle_lock = self.zrle_compressor.write().await;
                     if zrle_lock.is_none() {
-                        *zrle_lock = Some(Compress::new(Compression::new(compression_level as u32), true));
-                        info!("Initialized ZRLE compressor for ZYWRLE with level {}", compression_level);
+                        *zrle_lock = Some(Compress::new(
+                            Compression::new(u32::from(compression_level)),
+                            true,
+                        ));
+                        info!(
+                            "Initialized ZRLE compressor for ZYWRLE with level {compression_level}"
+                        );
                     }
                     let zrle_comp = zrle_lock.as_mut().unwrap();
 
                     // Use client's pixel format for encoding
-                    match encoding::encode_zrle_persistent(&translated, region.width, region.height, &*client_pixel_format, zrle_comp) {
+                    match encoding::encode_zrle_persistent(
+                        &translated,
+                        region.width,
+                        region.height,
+                        &client_pixel_format,
+                        zrle_comp,
+                    ) {
                         Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
                         Err(e) => {
-                            error!("ZYWRLE encoding failed: {}, falling back to RAW", e);
+                            error!("ZYWRLE encoding failed: {e}, falling back to RAW");
                             encoding_name = "RAW";
                             // translated already contains the correctly formatted data
                             (ENCODING_RAW, translated)
@@ -1164,16 +1262,22 @@ impl VncClient {
                     encoding_name = "RAW";
                     // Translate original pixel_data for RAW fallback
                     let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                        let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                        let mut buf = BytesMut::with_capacity(
+                            (region.width as usize * region.height as usize) * 4,
+                        );
                         for chunk in pixel_data.chunks_exact(4) {
                             buf.put_u8(chunk[0]); // R
                             buf.put_u8(chunk[1]); // G
                             buf.put_u8(chunk[2]); // B
-                            buf.put_u8(0);        // Padding
+                            buf.put_u8(0); // Padding
                         }
                         buf
                     } else {
-                        translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                        translate::translate_pixels(
+                            &pixel_data,
+                            &server_format,
+                            &client_pixel_format,
+                        )
                     };
                     (ENCODING_RAW, translated)
                 };
@@ -1199,35 +1303,48 @@ impl VncClient {
                 // For other encodings (TightPng, Hextile): translate first then encode
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    let mut buf = BytesMut::with_capacity(
+                        (region.width as usize * region.height as usize) * 4,
+                    );
                     for chunk in pixel_data.chunks_exact(4) {
                         buf.put_u8(chunk[0]); // R
                         buf.put_u8(chunk[1]); // G
                         buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0);        // Padding (not alpha)
+                        buf.put_u8(0); // Padding (not alpha)
                     }
                     buf
                 } else {
                     // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
                 };
-                (preferred_encoding, encoder.encode(&translated, region.width, region.height, jpeg_quality, compression_level))
+                (
+                    preferred_encoding,
+                    encoder.encode(
+                        &translated,
+                        region.width,
+                        region.height,
+                        jpeg_quality,
+                        compression_level,
+                    ),
+                )
             } else {
                 // Fallback to RAW encoding if preferred encoding is not available
-                error!("Encoding {} not available, falling back to RAW", preferred_encoding);
+                error!("Encoding {preferred_encoding} not available, falling back to RAW");
                 encoding_name = "RAW"; // Update encoding name to reflect fallback
-                // Translate for RAW fallback
+                                       // Translate for RAW fallback
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                    let mut buf = BytesMut::with_capacity((region.width as usize * region.height as usize) * 4);
+                    let mut buf = BytesMut::with_capacity(
+                        (region.width as usize * region.height as usize) * 4,
+                    );
                     for chunk in pixel_data.chunks_exact(4) {
                         buf.put_u8(chunk[0]); // R
                         buf.put_u8(chunk[1]); // G
                         buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0);        // Padding
+                        buf.put_u8(0); // Padding
                     }
                     buf
                 } else {
-                    translate::translate_pixels(&pixel_data, &server_format, &*client_pixel_format)
+                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
                 };
                 (ENCODING_RAW, translated)
             };
@@ -1243,13 +1360,13 @@ impl VncClient {
             rect.write_header(&mut response);
             response.extend_from_slice(&encoded);
 
-            total_pixels += (region.width as u64) * (region.height as u64);
+            total_pixels += u64::from(region.width) * u64::from(region.height);
         }
 
         // Acquire send mutex to prevent interleaved writes
-        let _lock = self.send_mutex.lock().await;
+        let lock = self.send_mutex.lock().await;
         self.write_stream.lock().await.write_all(&response).await?;
-        drop(_lock);
+        drop(lock);
 
         // Reset deferral timer and update last sent time
         self.start_deferring_nanos.store(0, Ordering::Relaxed); // Reset deferral
@@ -1273,6 +1390,7 @@ impl VncClient {
     /// # Returns
     ///
     /// `Ok(())` on successful transmission, or `Err(std::io::Error)` if an I/O error occurs.
+    #[allow(clippy::cast_possible_truncation)] // Clipboard text length limited to u32 per VNC protocol
     pub async fn send_cut_text(&mut self, text: String) -> Result<(), std::io::Error> {
         let mut msg = BytesMut::new();
         msg.put_u8(SERVER_MSG_SERVER_CUT_TEXT);
@@ -1295,7 +1413,9 @@ impl VncClient {
     ///
     /// This allows external code to close the write half directly for shutdown,
     /// which will cause reads on the read half to fail naturally.
-    pub fn get_write_stream_handle(&self) -> Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>> {
+    pub fn get_write_stream_handle(
+        &self,
+    ) -> Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>> {
         self.write_stream.clone()
     }
 
@@ -1307,7 +1427,7 @@ impl VncClient {
     /// Returns the destination port for repeater connections.
     /// Returns -1 for direct connections (not using a repeater).
     pub fn get_destination_port(&self) -> i32 {
-        self.destination_port.map(|p| p as i32).unwrap_or(-1)
+        self.destination_port.map_or(-1, i32::from)
     }
 
     /// Returns the repeater ID if this client is connected via a repeater.
@@ -1328,16 +1448,19 @@ impl VncClient {
     }
 }
 
-/// Ensures proper cleanup when VncClient is dropped.
+/// Ensures proper cleanup when `VncClient` is dropped.
 ///
-/// When VncClient is dropped, the read half of the TCP stream (`read_stream: OwnedReadHalf`)
+/// When `VncClient` is dropped, the read half of the TCP stream (`read_stream: OwnedReadHalf`)
 /// is automatically closed because it's an owned field. This completes the client disconnect
 /// sequence after the write half has been closed separately during shutdown.
 ///
-/// The log message helps diagnose the shutdown sequence by confirming when VncClient
+/// The log message helps diagnose the shutdown sequence by confirming when `VncClient`
 /// objects are actually being dropped and their TCP read streams are closing.
 impl Drop for VncClient {
     fn drop(&mut self) {
-        log::info!("VncClient {} is being dropped (read half will close now)", self.client_id);
+        log::info!(
+            "VncClient {} is being dropped (read half will close now)",
+            self.client_id
+        );
     }
 }

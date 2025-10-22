@@ -12,30 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
-//! VNC TightPng encoding implementation.
+//! VNC `TightPng` encoding implementation.
 //!
-//! TightPng encoding uses PNG compression exclusively for all rectangles.
+//! `TightPng` encoding uses PNG compression exclusively for all rectangles.
 //! Unlike standard Tight encoding which supports multiple compression modes
-//! (solid fill, palette, zlib, JPEG), TightPng ONLY uses PNG mode.
+//! (solid fill, palette, zlib, JPEG), `TightPng` ONLY uses PNG mode.
 //!
 //! This design is optimized for browser-based VNC clients like noVNC,
 //! which can decode PNG data natively in hardware without needing to
 //! handle zlib decompression or palette operations.
 
-use bytes::{BufMut, BytesMut};
 use super::Encoding;
 use crate::protocol::TIGHT_PNG;
+use bytes::{BufMut, BytesMut};
 
-/// Implements the VNC "TightPng" encoding (encoding -260).
+/// Implements the VNC "`TightPng`" encoding (encoding -260).
 ///
-/// TightPng sends all pixel data as PNG-compressed images, regardless of
+/// `TightPng` sends all pixel data as PNG-compressed images, regardless of
 /// content. This differs from standard Tight encoding which uses multiple
 /// compression strategies.
 pub struct TightPngEncoding;
 
 impl Encoding for TightPngEncoding {
-    fn encode(&self, data: &[u8], width: u16, height: u16, _quality: u8, compression: u8) -> BytesMut {
+    fn encode(
+        &self,
+        data: &[u8],
+        width: u16,
+        height: u16,
+        _quality: u8,
+        compression: u8,
+    ) -> BytesMut {
         // TightPng ONLY uses PNG mode - no solid fill, no palette modes
         // This is the key difference from standard Tight encoding
         // Browser-based clients like noVNC expect only PNG data
@@ -43,11 +49,12 @@ impl Encoding for TightPngEncoding {
     }
 }
 
-/// Encode as TightPng using PNG compression.
+/// Encode as `TightPng` using PNG compression.
 ///
-/// This is the only compression mode used by TightPng encoding.
+/// This is the only compression mode used by `TightPng` encoding.
+#[allow(clippy::cast_possible_truncation)] // TightPng compact length encoding uses variable-length u8 packing per RFC 6143
 fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) -> BytesMut {
-    use png::{Encoder, ColorType, BitDepth};
+    use png::{BitDepth, ColorType, Encoder};
 
     // Convert RGBA to RGB (PNG encoder will handle this)
     let mut rgb_data = Vec::with_capacity((width as usize) * (height as usize) * 3);
@@ -60,7 +67,7 @@ fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) ->
     // Create PNG encoder
     let mut png_data = Vec::new();
     {
-        let mut encoder = Encoder::new(&mut png_data, width as u32, height as u32);
+        let mut encoder = Encoder::new(&mut png_data, u32::from(width), u32::from(height));
         encoder.set_color(ColorType::Rgb);
         encoder.set_depth(BitDepth::Eight);
 
@@ -75,7 +82,7 @@ fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) ->
         let mut writer = match encoder.write_header() {
             Ok(w) => w,
             Err(e) => {
-                log::error!("PNG header write failed: {}, falling back to basic encoding", e);
+                log::error!("PNG header write failed: {e}, falling back to basic encoding");
                 // Fall back to basic tight encoding
                 let mut buf = BytesMut::with_capacity(1 + data.len());
                 buf.put_u8(0x00); // Basic tight encoding, no compression
@@ -83,14 +90,14 @@ fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) ->
                     buf.put_u8(chunk[0]); // R
                     buf.put_u8(chunk[1]); // G
                     buf.put_u8(chunk[2]); // B
-                    buf.put_u8(0);        // Padding
+                    buf.put_u8(0); // Padding
                 }
                 return buf;
             }
         };
 
         if let Err(e) = writer.write_image_data(&rgb_data) {
-            log::error!("PNG data write failed: {}, falling back to basic encoding", e);
+            log::error!("PNG data write failed: {e}, falling back to basic encoding");
             // Fall back to basic tight encoding
             let mut buf = BytesMut::with_capacity(1 + data.len());
             buf.put_u8(0x00); // Basic tight encoding, no compression
@@ -98,7 +105,7 @@ fn encode_tightpng_png(data: &[u8], width: u16, height: u16, compression: u8) ->
                 buf.put_u8(chunk[0]); // R
                 buf.put_u8(chunk[1]); // G
                 buf.put_u8(chunk[2]); // B
-                buf.put_u8(0);        // Padding
+                buf.put_u8(0); // Padding
             }
             return buf;
         }
