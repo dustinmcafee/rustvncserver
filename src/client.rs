@@ -857,7 +857,8 @@ impl VncClient {
             return Ok(());
         }
 
-        let _start = Instant::now();
+        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables))]
+        let start = Instant::now();
 
         // Calculate total rectangles including CoRRE tiles
         // For CoRRE encoding, large rectangles are split into 255x255 tiles
@@ -887,7 +888,8 @@ impl VncClient {
         response.put_u8(0); // padding
         response.put_u16(total_rects as u16); // number of rectangles
 
-        let mut _encoding_name = match preferred_encoding {
+        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables, unused_assignments))]
+        let mut encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
             ENCODING_TIGHTPNG => "TIGHTPNG",
             ENCODING_ZYWRLE => "ZYWRLE",
@@ -900,8 +902,10 @@ impl VncClient {
             _ => "RAW",
         };
 
-        let mut _total_pixels = 0u64;
-        let mut _copy_rect_count = 0;
+        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables, unused_assignments))]
+        let mut total_pixels = 0u64;
+        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables, unused_assignments))]
+        let mut copy_rect_count = 0;
 
         // Load quality/compression settings atomically
         let jpeg_quality = self.jpeg_quality.load(Ordering::Relaxed);
@@ -934,8 +938,8 @@ impl VncClient {
                 response.put_u16(src_x);
                 response.put_u16(src_y);
 
-                _total_pixels += u64::from(region.width) * u64::from(region.height);
-                _copy_rect_count += 1;
+                total_pixels += u64::from(region.width) * u64::from(region.height);
+                copy_rect_count += 1;
             }
         }
 
@@ -1021,7 +1025,7 @@ impl VncClient {
                             // Write encoder output (background color + subrectangle data)
                             response.extend_from_slice(&encoded);
 
-                            _total_pixels += u64::from(tile_width) * u64::from(tile_height);
+                            total_pixels += u64::from(tile_width) * u64::from(tile_height);
                         }
 
                         x += tile_width;
@@ -1107,7 +1111,7 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIB encoding failed: {e}, falling back to RAW");
-                        _encoding_name = "RAW";
+                        encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1152,7 +1156,7 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIBHEX encoding failed: {e}, falling back to RAW");
-                        _encoding_name = "RAW";
+                        encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1199,7 +1203,7 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZRLE encoding failed: {e}, falling back to RAW");
-                        _encoding_name = "RAW";
+                        encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1267,7 +1271,7 @@ impl VncClient {
                         Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
                         Err(e) => {
                             error!("ZYWRLE encoding failed: {e}, falling back to RAW");
-                            _encoding_name = "RAW";
+                            encoding_name = "RAW";
                             // translated already contains the correctly formatted data
                             (ENCODING_RAW, translated)
                         }
@@ -1275,7 +1279,7 @@ impl VncClient {
                 } else {
                     // Analysis failed (dimensions too small), fall back to RAW with translation
                     error!("ZYWRLE analysis failed (dimensions too small), falling back to RAW");
-                    _encoding_name = "RAW";
+                    encoding_name = "RAW";
                     // Translate original pixel_data for RAW fallback
                     let translated = if client_pixel_format.is_compatible_with_rgba32() {
                         let mut buf = BytesMut::with_capacity(
@@ -1346,7 +1350,7 @@ impl VncClient {
             } else {
                 // Fallback to RAW encoding if preferred encoding is not available
                 error!("Encoding {preferred_encoding} not available, falling back to RAW");
-                _encoding_name = "RAW"; // Update encoding name to reflect fallback
+                encoding_name = "RAW"; // Update encoding name to reflect fallback
                                        // Translate for RAW fallback
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     let mut buf = BytesMut::with_capacity(
@@ -1376,7 +1380,7 @@ impl VncClient {
             rect.write_header(&mut response);
             response.extend_from_slice(&encoded);
 
-            _total_pixels += u64::from(region.width) * u64::from(region.height);
+            total_pixels += u64::from(region.width) * u64::from(region.height);
         }
 
         // Acquire send mutex to prevent interleaved writes
@@ -1390,10 +1394,10 @@ impl VncClient {
 
         #[cfg(feature = "debug-logging")]
         {
-            let elapsed = _start.elapsed();
+            let elapsed = start.elapsed();
             info!(
                 "Sent {} rects ({} CopyRect + {} encoded, {} pixels total) using {} ({} bytes, {}ms encode+send)",
-                total_rects, _copy_rect_count, modified_regions_to_send.len(), _total_pixels, _encoding_name, response.len(), elapsed.as_millis()
+                total_rects, copy_rect_count, modified_regions_to_send.len(), total_pixels, encoding_name, response.len(), elapsed.as_millis()
             );
         }
 
