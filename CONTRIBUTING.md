@@ -37,7 +37,7 @@ We welcome feature suggestions! Please create an issue with:
 
 ### Prerequisites
 
-- Rust 1.76 or later
+- Rust 1.90 or later
 - `libjpeg-turbo` (optional, for turbojpeg feature)
 
 ### Building

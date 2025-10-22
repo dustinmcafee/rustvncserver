@@ -134,6 +134,7 @@ pub fn encode_zrle_persistent(
     result.put_u32(compressed_output.len() as u32);
     result.extend_from_slice(compressed_output);
 
+    #[cfg(feature = "debug-logging")]
     log::info!(
         "ZRLE: compressed {}->{}  bytes ({}x{} tiles)",
         uncompressed_data.len(),

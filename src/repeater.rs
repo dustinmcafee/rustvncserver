@@ -76,12 +76,15 @@ pub async fn connect_repeater(
     password: Option<String>,
     event_tx: mpsc::UnboundedSender<ClientEvent>,
 ) -> Result<VncClient, io::Error> {
+    #[cfg(feature = "debug-logging")]
     info!("Connecting to VNC repeater {repeater_host}:{repeater_port} with ID: {repeater_id}");
 
     // Connect to repeater
+    #[cfg(feature = "debug-logging")]
     info!("Attempting TCP connection to {repeater_host}:{repeater_port}...");
     let mut stream = match TcpStream::connect(format!("{repeater_host}:{repeater_port}")).await {
         Ok(s) => {
+            #[cfg(feature = "debug-logging")]
             info!("TCP connection established to {repeater_host}:{repeater_port}");
             s
         }
@@ -109,12 +112,14 @@ pub async fn connect_repeater(
     id_buffer[..id_string.len()].copy_from_slice(id_string.as_bytes());
 
     // Send ID to repeater
+    #[cfg(feature = "debug-logging")]
     info!("Sending repeater ID: {id_string}");
     if let Err(e) = stream.write_all(&id_buffer).await {
         error!("Failed to send repeater ID to {repeater_host}:{repeater_port}: {e}");
         return Err(e);
     }
 
+    #[cfg(feature = "debug-logging")]
     info!("Repeater ID sent, proceeding with VNC handshake");
 
     // Now proceed with normal VNC client handshake
@@ -131,6 +136,7 @@ pub async fn connect_repeater(
     // Set repeater metadata for client management APIs
     client.set_repeater_metadata(repeater_id, Some(repeater_port));
 
+    #[cfg(feature = "debug-logging")]
     info!("VNC repeater connection established successfully");
     Ok(client)
 }

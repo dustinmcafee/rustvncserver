@@ -172,11 +172,13 @@ impl VncServer {
     #[allow(clippy::cast_possible_truncation)] // Client ID counter limited to u64::MAX, safe on 64-bit platforms
     pub async fn listen(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+        #[cfg(feature = "debug-logging")]
         info!("VNC Server listening on port {port}");
 
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
+                    #[cfg(feature = "debug-logging")]
                     info!("New VNC client connection from: {addr}");
 
                     // Safely increment client ID counter and check for overflow
@@ -351,6 +353,7 @@ impl VncServer {
 
         let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
+        #[cfg(feature = "debug-logging")]
         info!("Client {client_id} disconnected");
         Ok(())
     }
@@ -437,6 +440,7 @@ impl VncServer {
         }
         let client_id = client_id_raw as usize;
 
+        #[cfg(feature = "debug-logging")]
         info!("Initiating reverse VNC connection to {host}:{port}");
 
         let framebuffer = self.framebuffer.clone();
@@ -459,6 +463,7 @@ impl VncServer {
 
             match connection_result {
                 Ok(stream) => {
+                    #[cfg(feature = "debug-logging")]
                     info!("TCP connection established to {host}:{port}");
 
                     // Create VNC client for this reverse connection
@@ -485,6 +490,7 @@ impl VncServer {
                             // Set connection metadata for client management APIs
                             client.set_connection_metadata(Some(port));
 
+                            #[cfg(feature = "debug-logging")]
                             info!("Reverse connection {client_id} established");
 
                             let client_arc = Arc::new(RwLock::new(client));
@@ -564,6 +570,7 @@ impl VncServer {
                             let _ =
                                 server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
+                            #[cfg(feature = "debug-logging")]
                             info!("Reverse client {client_id} disconnected");
                         }
                         Err(e) => {
@@ -666,6 +673,7 @@ impl VncServer {
 
             match connection_result {
                 Ok(client) => {
+                    #[cfg(feature = "debug-logging")]
                     info!("Repeater connection {client_id} established");
 
                     let client_arc = Arc::new(RwLock::new(client));
@@ -742,6 +750,7 @@ impl VncServer {
 
                     let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
+                    #[cfg(feature = "debug-logging")]
                     info!("Repeater client {client_id} disconnected");
                 }
                 Err(e) => {
@@ -817,6 +826,7 @@ impl VncServer {
         drop(clients); // Explicitly release write lock
 
         if removed {
+            #[cfg(feature = "debug-logging")]
             info!("Client {client_id} removed from server client list");
         }
 
@@ -920,22 +930,27 @@ impl VncServer {
 
         let count = tasks_to_abort.len();
         if count > 0 {
+            #[cfg(feature = "debug-logging")]
             info!("Disconnecting {count} client(s)");
 
             // Step 1: Abort all tasks
+            #[cfg(feature = "debug-logging")]
             info!("Aborting {count} client task(s)");
             for task in &tasks_to_abort {
                 task.abort();
             }
 
             // Step 2: Wait for tasks to exit (ensures task's Arc<VncClient> is dropped)
+            #[cfg(feature = "debug-logging")]
             info!("Waiting for {count} client task(s) to exit");
             for task in tasks_to_abort {
                 let _ = task.await;
             }
+            #[cfg(feature = "debug-logging")]
             info!("All client tasks exited");
 
             // Step 3: Clear client lists (drops last Arc<VncClient>, VncClient drops, read half closes)
+            #[cfg(feature = "debug-logging")]
             info!("Clearing client list to drop VncClient objects");
             {
                 let mut clients = self.clients.write().await;
@@ -947,6 +962,7 @@ impl VncServer {
             }
 
             // Step 4: Close all write halves (write half closes, TCP fully closed)
+            #[cfg(feature = "debug-logging")]
             info!(
                 "Closing {} client write stream(s)",
                 write_streams_to_close.len()
@@ -966,6 +982,7 @@ impl VncServer {
             drop(client_ids);
         }
 
+        #[cfg(feature = "debug-logging")]
         info!("All clients disconnected");
     }
 
