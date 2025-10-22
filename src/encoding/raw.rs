@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC Raw encoding implementation.
 //!
 //! The simplest encoding that sends pixel data directly without compression.
 //! High bandwidth but universally supported.
 
-use bytes::{BufMut, BytesMut};
 use super::Encoding;
+use bytes::{BufMut, BytesMut};
 
 /// Implements the VNC "Raw" encoding, which sends pixel data directly without compression.
 ///
@@ -28,7 +27,14 @@ use super::Encoding;
 pub struct RawEncoding;
 
 impl Encoding for RawEncoding {
-    fn encode(&self, data: &[u8], _width: u16, _height: u16, _quality: u8, _compression: u8) -> BytesMut {
+    fn encode(
+        &self,
+        data: &[u8],
+        _width: u16,
+        _height: u16,
+        _quality: u8,
+        _compression: u8,
+    ) -> BytesMut {
         // For 32bpp clients: convert RGBA to client pixel format (RGBX where X is padding)
         // Client format: R at bits 0-7, G at bits 8-15, B at bits 16-23, padding at bits 24-31
         let mut buf = BytesMut::with_capacity(data.len()); // Same size: 4 bytes per pixel
@@ -36,7 +42,7 @@ impl Encoding for RawEncoding {
             buf.put_u8(chunk[0]); // R at byte 0
             buf.put_u8(chunk[1]); // G at byte 1
             buf.put_u8(chunk[2]); // B at byte 2
-            buf.put_u8(0);        // Padding at byte 3 (not alpha)
+            buf.put_u8(0); // Padding at byte 3 (not alpha)
         }
         buf
     }

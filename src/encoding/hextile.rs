@@ -12,16 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC Hextile encoding implementation.
 //!
 //! Hextile divides the rectangle into 16x16 tiles and encodes each independently.
 //! Each tile can be: raw, solid, monochrome with subrects, or colored with subrects.
 
-use bytes::{BufMut, BytesMut};
+use super::common::{
+    analyze_tile_colors, extract_tile, find_subrects, put_pixel32, rgba_to_rgb24_pixels,
+};
 use super::Encoding;
-use super::common::{rgba_to_rgb24_pixels, extract_tile, analyze_tile_colors, find_subrects, put_pixel32};
-use crate::protocol::{HEXTILE_RAW, HEXTILE_BACKGROUND_SPECIFIED, HEXTILE_FOREGROUND_SPECIFIED, HEXTILE_ANY_SUBRECTS, HEXTILE_SUBRECTS_COLOURED};
+use crate::protocol::{
+    HEXTILE_ANY_SUBRECTS, HEXTILE_BACKGROUND_SPECIFIED, HEXTILE_FOREGROUND_SPECIFIED, HEXTILE_RAW,
+    HEXTILE_SUBRECTS_COLOURED,
+};
+use bytes::{BufMut, BytesMut};
 
 /// Implements the VNC "Hextile" encoding.
 ///
@@ -30,7 +34,16 @@ use crate::protocol::{HEXTILE_RAW, HEXTILE_BACKGROUND_SPECIFIED, HEXTILE_FOREGRO
 pub struct HextileEncoding;
 
 impl Encoding for HextileEncoding {
-    fn encode(&self, data: &[u8], width: u16, height: u16, _quality: u8, _compression: u8) -> BytesMut {
+    #[allow(clippy::similar_names)] // last_bg and last_fg are standard VNC Hextile terminology
+    #[allow(clippy::cast_possible_truncation)] // Hextile protocol requires packing coordinates into u8 (max 16x16 tiles)
+    fn encode(
+        &self,
+        data: &[u8],
+        width: u16,
+        height: u16,
+        _quality: u8,
+        _compression: u8,
+    ) -> BytesMut {
         let mut buf = BytesMut::new();
         let pixels = rgba_to_rgb24_pixels(data);
 
@@ -44,7 +57,14 @@ impl Encoding for HextileEncoding {
                 let tile_h = std::cmp::min(16, height - tile_y);
 
                 // Extract tile data
-                let tile_pixels = extract_tile(&pixels, width as usize, tile_x as usize, tile_y as usize, tile_w as usize, tile_h as usize);
+                let tile_pixels = extract_tile(
+                    &pixels,
+                    width as usize,
+                    tile_x as usize,
+                    tile_y as usize,
+                    tile_w as usize,
+                    tile_h as usize,
+                );
 
                 // Analyze tile colors
                 let (is_solid, is_mono, bg, fg) = analyze_tile_colors(&tile_pixels);
@@ -64,12 +84,13 @@ impl Encoding for HextileEncoding {
                     }
                 } else {
                     // Find subrectangles
-                    let subrects = find_subrects(&tile_pixels, tile_w as usize, tile_h as usize, bg);
+                    let subrects =
+                        find_subrects(&tile_pixels, tile_w as usize, tile_h as usize, bg);
 
                     // Check if raw would be smaller OR if too many subrects (>255 max for u8)
                     let raw_size = tile_w as usize * tile_h as usize * 4; // 4 bytes per pixel for 32bpp
-                    // Estimate overhead: bg (if different) + fg (if mono and different) + count byte
-                    let bg_overhead = if Some(bg) != last_bg { 4 } else { 0 };
+                                                                          // Estimate overhead: bg (if different) + fg (if mono and different) + count byte
+                    let bg_overhead = if Some(bg) == last_bg { 0 } else { 4 };
                     let fg_overhead = if is_mono && Some(fg) != last_fg { 4 } else { 0 };
                     let subrect_data = subrects.len() * if is_mono { 2 } else { 6 };
                     let encoded_size = bg_overhead + fg_overhead + 1 + subrect_data;
@@ -124,8 +145,9 @@ impl Encoding for HextileEncoding {
 
                         for sr in subrects {
                             put_pixel32(&mut buf, sr.color); // 4 bytes for 32bpp
-                            buf.put_u8(((sr.x as u8) << 4) | (sr.y as u8));  // packed X,Y
-                            buf.put_u8((((sr.w - 1) as u8) << 4) | ((sr.h - 1) as u8));  // packed W-1,H-1
+                            buf.put_u8(((sr.x as u8) << 4) | (sr.y as u8)); // packed X,Y
+                            buf.put_u8((((sr.w - 1) as u8) << 4) | ((sr.h - 1) as u8));
+                            // packed W-1,H-1
                         }
                     }
                 }

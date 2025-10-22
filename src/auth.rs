@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC authentication implementation.
 //!
 //! This module implements VNC Authentication (security type 2) as specified in RFC 6143 Section 7.2.2.
@@ -67,6 +66,7 @@ impl VncAuth {
     /// # Returns
     ///
     /// A `[u8; 16]` array containing the random challenge bytes.
+    #[allow(clippy::unused_self)] // Kept as method for API consistency with other VncAuthenticator methods
     pub fn generate_challenge(&self) -> [u8; 16] {
         let mut rng = rand::thread_rng();
         let mut challenge = [0u8; 16];
@@ -111,6 +111,7 @@ impl VncAuth {
     /// # Returns
     ///
     /// A `Vec<u8>` containing the 16-byte encrypted challenge.
+    #[allow(clippy::unused_self)] // Kept as method for API consistency with other VncAuthenticator methods
     fn encrypt_challenge(&self, challenge: &[u8; 16], password: &str) -> Vec<u8> {
         // Prepare VNC password key (8 bytes, bit-reversed)
         let mut key = [0u8; 8];

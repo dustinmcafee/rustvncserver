@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC ZYWRLE (Zlib+Wavelet+Run-Length Encoding) implementation.
 //!
 //! ZYWRLE is a wavelet-based lossy compression encoding for low-bandwidth scenarios.
 //! It uses:
-//! - Piecewise-Linear Haar (PLHarr) wavelet transform
+//! - Piecewise-Linear Haar (`PLHarr`) wavelet transform
 //! - RCT (Reversible Color Transform) for RGB to YUV conversion
 //! - Non-linear quantization filtering
 //! - ZRLE encoding on the transformed coefficients
@@ -31,7 +30,7 @@
 //! Hitachi Systems & Services, Ltd. for use of the ZYWRLE codec.
 //!
 //! # References
-//! - PLHarr: Senecal, J. G., et al., "An Improved N-Bit to N-Bit Reversible Haar-Like Transform"
+//! - `PLHarr`: Senecal, J. G., et al., "An Improved N-Bit to N-Bit Reversible Haar-Like Transform"
 //! - EZW: Shapiro, JM: "Embedded Image Coding Using Zerotrees of Wavelet Coefficients"
 //! - ZYWRLE specification and reference implementation
 
@@ -40,98 +39,80 @@
 /// The tables map input coefficient values [0..255] to quantized-dequantized (filtered) values.
 ///
 /// Table selection based on quality level:
-/// - zywrle_conv[0]: bi=5, bo=5 r=0.0:PSNR=24.849 (zero everything, highest compression)
-/// - zywrle_conv[1]: bi=5, bo=5 r=2.0:PSNR=74.031 (good quality)
-/// - zywrle_conv[2]: bi=5, bo=4 r=2.0:PSNR=64.441 (medium quality)
-/// - zywrle_conv[3]: bi=5, bo=2 r=2.0:PSNR=43.175 (low quality, highest compression)
+/// - `zywrle_conv`[0]: bi=5, bo=5 r=0.0:PSNR=24.849 (zero everything, highest compression)
+/// - `zywrle_conv`[1]: bi=5, bo=5 r=2.0:PSNR=74.031 (good quality)
+/// - `zywrle_conv`[2]: bi=5, bo=4 r=2.0:PSNR=64.441 (medium quality)
+/// - `zywrle_conv`[3]: bi=5, bo=2 r=2.0:PSNR=43.175 (low quality, highest compression)
 const ZYWRLE_CONV: [[i8; 256]; 4] = [
     [
         // bi=5, bo=5 r=0.0:PSNR=24.849
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
     [
         // bi=5, bo=5 r=2.0:PSNR=74.031
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 48, 48, 48, 48, 48, 48, 48, 48,
-        48, 48, 48, 56, 56, 56, 56, 56, 56, 56, 56, 56, 64, 64, 64, 64,
-        64, 64, 64, 64, 72, 72, 72, 72, 72, 72, 72, 72, 80, 80, 80, 80,
-        80, 80, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 96, 96,
-        96, 96, 96, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 112, 112, 112,
-        112, 112, 112, 112, 112, 112, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120,
-        0, -120, -120, -120, -120, -120, -120, -120, -120, -120, -120, -112, -112, -112, -112, -112,
-        -112, -112, -112, -112, -104, -104, -104, -104, -104, -104, -104, -104, -104, -104, -96, -96,
-        -96, -96, -96, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -80,
-        -80, -80, -80, -80, -80, -72, -72, -72, -72, -72, -72, -72, -72, -64, -64, -64,
-        -64, -64, -64, -64, -64, -56, -56, -56, -56, -56, -56, -56, -56, -56, -48, -48,
-        -48, -48, -48, -48, -48, -48, -48, -48, -48, -32, -32, -32, -32, -32, -32, -32,
-        -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 56,
+        56, 56, 56, 56, 56, 56, 56, 56, 64, 64, 64, 64, 64, 64, 64, 64, 72, 72, 72, 72, 72, 72, 72,
+        72, 80, 80, 80, 80, 80, 80, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 96, 96, 96, 96,
+        96, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 112, 112, 112, 112, 112, 112, 112,
+        112, 112, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 0, -120, -120, -120, -120,
+        -120, -120, -120, -120, -120, -120, -112, -112, -112, -112, -112, -112, -112, -112, -112,
+        -104, -104, -104, -104, -104, -104, -104, -104, -104, -104, -96, -96, -96, -96, -96, -88,
+        -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -80, -80, -80, -80, -80, -80, -72,
+        -72, -72, -72, -72, -72, -72, -72, -64, -64, -64, -64, -64, -64, -64, -64, -56, -56, -56,
+        -56, -56, -56, -56, -56, -56, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -32,
+        -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
     [
         // bi=5, bo=4 r=2.0:PSNR=64.441
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
-        48, 48, 48, 48, 48, 48, 48, 48, 64, 64, 64, 64, 64, 64, 64, 64,
-        64, 64, 64, 64, 64, 64, 64, 64, 80, 80, 80, 80, 80, 80, 80, 80,
-        80, 80, 80, 80, 80, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
-        104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 112, 112, 112, 112, 112,
-        112, 112, 112, 112, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120,
-        0, -120, -120, -120, -120, -120, -120, -120, -120, -120, -120, -120, -120, -112, -112, -112,
-        -112, -112, -112, -112, -112, -112, -104, -104, -104, -104, -104, -104, -104, -104, -104, -104,
-        -104, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -80, -80, -80, -80,
-        -80, -80, -80, -80, -80, -80, -80, -80, -80, -64, -64, -64, -64, -64, -64, -64,
-        -64, -64, -64, -64, -64, -64, -64, -64, -64, -48, -48, -48, -48, -48, -48, -48,
-        -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48,
-        -48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+        48, 48, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 80, 80, 80, 80, 80,
+        80, 80, 80, 80, 80, 80, 80, 80, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 104, 104, 104,
+        104, 104, 104, 104, 104, 104, 104, 104, 112, 112, 112, 112, 112, 112, 112, 112, 112, 120,
+        120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 0, -120, -120, -120, -120, -120,
+        -120, -120, -120, -120, -120, -120, -120, -112, -112, -112, -112, -112, -112, -112, -112,
+        -112, -104, -104, -104, -104, -104, -104, -104, -104, -104, -104, -104, -88, -88, -88, -88,
+        -88, -88, -88, -88, -88, -88, -88, -80, -80, -80, -80, -80, -80, -80, -80, -80, -80, -80,
+        -80, -80, -64, -64, -64, -64, -64, -64, -64, -64, -64, -64, -64, -64, -64, -64, -64, -64,
+        -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48, -48,
+        -48, -48, -48, -48, -48, -48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
     [
         // bi=5, bo=2 r=2.0:PSNR=43.175
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
-        88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
-        88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
-        88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
-        0, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88,
-        -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88,
-        -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88,
-        -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88,
-        -88, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
+        88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
+        88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 0, -88,
+        -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88,
+        -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88,
+        -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88, -88,
+        -88, -88, -88, -88, -88, -88, -88, -88, -88, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ],
 ];
 
 /// Filter parameter tables indexed by [level-1][l][channel].
 /// Maps quality level and wavelet level to the appropriate quantization filter.
 const ZYWRLE_PARAM: [[[usize; 3]; 3]; 3] = [
-    [[0, 2, 0], [0, 0, 0], [0, 0, 0]],  // level 1
-    [[0, 3, 0], [1, 1, 1], [0, 0, 0]],  // level 2
-    [[0, 3, 0], [2, 2, 2], [1, 1, 1]],  // level 3
+    [[0, 2, 0], [0, 0, 0], [0, 0, 0]], // level 1
+    [[0, 3, 0], [1, 1, 1], [0, 0, 0]], // level 2
+    [[0, 3, 0], [2, 2, 2], [1, 1, 1]], // level 3
 ];
 
-/// Piecewise-Linear Haar (PLHarr) transform on two signed bytes.
+/// Piecewise-Linear Haar (`PLHarr`) transform on two signed bytes.
 ///
 /// This is the core wavelet transform operation. It's an improved N-bit to N-bit
 /// reversible Haar-like transform that handles signed values correctly.
@@ -140,9 +121,10 @@ const ZYWRLE_PARAM: [[[usize; 3]; 3]; 3] = [
 /// * `x0` - First coefficient (modified in place to contain Low component)
 /// * `x1` - Second coefficient (modified in place to contain High component)
 #[inline]
+#[allow(clippy::cast_possible_truncation)] // Piecewise-Linear Haar transform uses i32 math, results fit in i8
 fn harr(x0: &mut i8, x1: &mut i8) {
-    let orig_x0 = *x0 as i32;
-    let orig_x1 = *x1 as i32;
+    let orig_x0 = i32::from(*x0);
+    let orig_x1 = i32::from(*x1);
     let mut x0_val = orig_x0;
     let mut x1_val = orig_x1;
 
@@ -209,9 +191,8 @@ fn wavelet_level(data: &mut [i8], size: usize, level: usize, skip_pixel: usize) 
 /// * `height` - Image height
 /// * `level` - Number of wavelet levels to apply (1-3)
 fn wavelet(buf: &mut [i32], width: usize, height: usize, level: usize) {
-    let bytes = unsafe {
-        std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut i8, buf.len() * 4)
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<i8>(), buf.len() * 4) };
 
     for l in 0..level {
         // Horizontal transform
@@ -248,8 +229,9 @@ fn wavelet(buf: &mut [i32], width: usize, height: usize, level: usize) {
 ///
 /// # Performance Note
 /// This function contains bounds checks in nested loops which add ~2-3% overhead.
-/// The checks are necessary for safety but could be optimized with debug_assert!
+/// The checks are necessary for safety but could be optimized with `debug_assert`!
 /// and unsafe indexing if profiling shows this as a bottleneck.
+#[allow(clippy::cast_sign_loss)] // Quantization filter applies i8 lookup table to u8 bytes
 fn filter_wavelet_square(buf: &mut [i32], width: usize, height: usize, level: usize, l: usize) {
     let param = &ZYWRLE_PARAM[level - 1][l];
     let s = 2 << l;
@@ -290,13 +272,16 @@ fn filter_wavelet_square(buf: &mut [i32], width: usize, height: usize, level: us
 ///   U = B - G
 ///   V = R - G
 ///
-/// The U and V components are further processed to reduce to odd range for PLHarr.
+/// The U and V components are further processed to reduce to odd range for `PLHarr`.
 ///
 /// # Arguments
 /// * `buf` - Output coefficient buffer (YUV as i32)
 /// * `data` - Input RGBA pixel data
 /// * `width` - Image width
 /// * `height` - Image height
+#[allow(clippy::many_single_char_names)] // r, g, b, y, u, v are standard color component names
+#[allow(clippy::cast_sign_loss)] // RCT transform stores signed YUV as unsigned bytes in i32
+#[allow(clippy::cast_possible_truncation)] // YUV color components limited to i8 range (-128..127) per ZYWRLE spec
 fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
     let mut buf_idx = 0;
     let mut data_idx = 0;
@@ -304,9 +289,9 @@ fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
     for _ in 0..height {
         for _ in 0..width {
             if data_idx + 2 < data.len() && buf_idx < buf.len() {
-                let r = data[data_idx] as i32;
-                let g = data[data_idx + 1] as i32;
-                let b = data[data_idx + 2] as i32;
+                let r = i32::from(data[data_idx]);
+                let g = i32::from(data[data_idx + 1]);
+                let b = i32::from(data[data_idx + 2]);
 
                 // RCT transform
                 let mut y = (r + (g << 1) + b) >> 2;
@@ -322,9 +307,15 @@ fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
                 // For 15/16-bit, standard VNC protocol masks here, but we're always 32-bit RGBA
 
                 // Ensure not exactly -128 (helps with wavelet transform)
-                if y == -128 { y += 1; }
-                if u == -128 { u += 1; }
-                if v == -128 { v += 1; }
+                if y == -128 {
+                    y += 1;
+                }
+                if u == -128 {
+                    u += 1;
+                }
+                if v == -128 {
+                    v += 1;
+                }
 
                 // Store as VYU in little-endian order (matches standard VNC protocol ZYWRLE_SAVE_COEFF)
                 // U in byte 0, Y in byte 1, V in byte 2
@@ -349,7 +340,7 @@ fn rgb_to_yuv(buf: &mut [i32], data: &[u8], width: usize, height: usize) {
 /// * `level` - Wavelet level
 ///
 /// # Returns
-/// Tuple of (aligned_width, aligned_height)
+/// Tuple of (`aligned_width`, `aligned_height`)
 #[inline]
 fn calc_aligned_size(width: usize, height: usize, level: usize) -> (usize, usize) {
     let mask = !((1 << level) - 1);
@@ -371,7 +362,7 @@ fn calc_aligned_size(width: usize, height: usize, level: usize) -> (usize, usize
 ///
 /// # Performance Note
 /// This function contains bounds checks in nested loops which add ~1-2% overhead.
-/// The checks are necessary for safety but could be optimized with debug_assert!
+/// The checks are necessary for safety but could be optimized with `debug_assert`!
 /// and unsafe indexing if profiling shows this as a bottleneck.
 fn pack_coeff(buf: &[i32], dst: &mut [u8], r: usize, width: usize, height: usize, level: usize) {
     let s = 2 << level;
@@ -391,10 +382,10 @@ fn pack_coeff(buf: &[i32], dst: &mut [u8], r: usize, width: usize, height: usize
                 let pixel = buf[ph_offset];
                 let bytes = pixel.to_le_bytes();
                 // Load VYU and save as RGB (for 32bpp RGBA format)
-                dst[dst_idx] = bytes[2];      // V -> R
-                dst[dst_idx + 1] = bytes[1];  // Y -> G
-                dst[dst_idx + 2] = bytes[0];  // U -> B
-                dst[dst_idx + 3] = 0;         // A
+                dst[dst_idx] = bytes[2]; // V -> R
+                dst[dst_idx + 1] = bytes[1]; // Y -> G
+                dst[dst_idx + 2] = bytes[0]; // U -> B
+                dst[dst_idx + 3] = 0; // A
             }
             ph_offset += s;
         }
@@ -419,6 +410,7 @@ fn pack_coeff(buf: &[i32], dst: &mut [u8], r: usize, width: usize, height: usize
 ///
 /// # Returns
 /// Transformed pixel data ready for ZRLE encoding, or None if dimensions too small
+#[allow(clippy::uninit_vec)] // Performance optimization: all bytes written before return (see SAFETY comment)
 pub fn zywrle_analyze(
     src: &[u8],
     width: usize,

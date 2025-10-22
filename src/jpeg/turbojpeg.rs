@@ -12,42 +12,54 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
-//! FFI bindings to libjpeg-turbo's TurboJPEG API.
+//! FFI bindings to libjpeg-turbo's `TurboJPEG` API.
 //!
-//! This module provides a safe Rust wrapper around the TurboJPEG C API
+//! This module provides a safe Rust wrapper around the `TurboJPEG` C API
 //! for high-performance JPEG compression.
 
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_uchar, c_ulong};
 
-// TurboJPEG constants
-pub const TJPF_RGB: c_int = 0; // RGB pixel format
+// TurboJPEG pixel format constants
+/// RGB pixel format (red, green, blue)
+pub const TJPF_RGB: c_int = 0;
+/// BGR pixel format (blue, green, red)
 #[allow(dead_code)]
-pub const TJPF_BGR: c_int = 1; // BGR pixel format
+pub const TJPF_BGR: c_int = 1;
+/// RGBX pixel format (red, green, blue, unused)
 #[allow(dead_code)]
-pub const TJPF_RGBX: c_int = 2; // RGBX pixel format
+pub const TJPF_RGBX: c_int = 2;
+/// BGRX pixel format (blue, green, red, unused)
 #[allow(dead_code)]
-pub const TJPF_BGRX: c_int = 3; // BGRX pixel format
+pub const TJPF_BGRX: c_int = 3;
+/// XBGR pixel format (unused, blue, green, red)
 #[allow(dead_code)]
-pub const TJPF_XBGR: c_int = 4; // XBGR pixel format
+pub const TJPF_XBGR: c_int = 4;
+/// XRGB pixel format (unused, red, green, blue)
 #[allow(dead_code)]
-pub const TJPF_XRGB: c_int = 5; // XRGB pixel format
+pub const TJPF_XRGB: c_int = 5;
+/// Grayscale pixel format
 #[allow(dead_code)]
-pub const TJPF_GRAY: c_int = 6; // Grayscale pixel format
+pub const TJPF_GRAY: c_int = 6;
 
+// TurboJPEG chrominance subsampling constants
+/// 4:4:4 chrominance subsampling (no subsampling)
 #[allow(dead_code)]
-pub const TJSAMP_444: c_int = 0; // 4:4:4 chrominance subsampling
-pub const TJSAMP_422: c_int = 1; // 4:2:2 chrominance subsampling
+pub const TJSAMP_444: c_int = 0;
+/// 4:2:2 chrominance subsampling (2x1 subsampling)
+pub const TJSAMP_422: c_int = 1;
+/// 4:2:0 chrominance subsampling (2x2 subsampling)
 #[allow(dead_code)]
-pub const TJSAMP_420: c_int = 2; // 4:2:0 chrominance subsampling
+pub const TJSAMP_420: c_int = 2;
+/// Grayscale (no chrominance)
 #[allow(dead_code)]
-pub const TJSAMP_GRAY: c_int = 3; // Grayscale
+pub const TJSAMP_GRAY: c_int = 3;
 
 // Opaque TurboJPEG handle
 type TjHandle = *mut c_void;
 
 // External C functions from libjpeg-turbo
+#[link(name = "turbojpeg")]
 extern "C" {
     fn tjInitCompress() -> TjHandle;
     fn tjDestroy(handle: TjHandle) -> c_int;
@@ -68,13 +80,17 @@ extern "C" {
     fn tjGetErrorStr2(handle: TjHandle) -> *const c_char;
 }
 
-/// Safe Rust wrapper for TurboJPEG compression.
+/// Safe Rust wrapper for `TurboJPEG` compression.
 pub struct TurboJpegEncoder {
     handle: TjHandle,
 }
 
 impl TurboJpegEncoder {
-    /// Creates a new TurboJPEG encoder.
+    /// Creates a new `TurboJPEG` encoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `TurboJPEG` initialization fails
     pub fn new() -> Result<Self, String> {
         let handle = unsafe { tjInitCompress() };
         if handle.is_null() {
@@ -92,7 +108,13 @@ impl TurboJpegEncoder {
     /// * `quality` - JPEG quality (1-100, where 100 is best quality)
     ///
     /// # Returns
-    /// JPEG-compressed data as a Vec<u8>
+    ///
+    /// JPEG-compressed data as a `Vec<u8>`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data size is invalid or JPEG compression fails
+    #[allow(clippy::cast_possible_truncation)] // JPEG dimensions limited to u16 range
     pub fn compress_rgb(
         &mut self,
         rgb_data: &[u8],
@@ -116,21 +138,21 @@ impl TurboJpegEncoder {
             tjCompress2(
                 self.handle,
                 rgb_data.as_ptr(),
-                width as c_int,
+                c_int::from(width),
                 0, // pitch = 0 means width * pixel_size
-                height as c_int,
+                c_int::from(height),
                 TJPF_RGB,
-                &mut jpeg_buf,
-                &mut jpeg_size,
+                &raw mut jpeg_buf,
+                &raw mut jpeg_size,
                 TJSAMP_422, // 4:2:2 subsampling for good quality/size balance
-                quality as c_int,
+                c_int::from(quality),
                 0, // flags
             )
         };
 
         if result != 0 {
             let error_msg = self.get_error_string();
-            return Err(format!("TurboJPEG compression failed: {}", error_msg));
+            return Err(format!("TurboJPEG compression failed: {error_msg}"));
         }
 
         if jpeg_buf.is_null() {
@@ -138,9 +160,8 @@ impl TurboJpegEncoder {
         }
 
         // Copy JPEG data to Rust Vec
-        let jpeg_data = unsafe {
-            std::slice::from_raw_parts(jpeg_buf, jpeg_size as usize).to_vec()
-        };
+        let jpeg_data =
+            unsafe { std::slice::from_raw_parts(jpeg_buf, jpeg_size as usize).to_vec() };
 
         // Free TurboJPEG buffer
         unsafe {
@@ -150,7 +171,7 @@ impl TurboJpegEncoder {
         Ok(jpeg_data)
     }
 
-    /// Gets the last error message from TurboJPEG.
+    /// Gets the last error message from `TurboJPEG`.
     fn get_error_string(&self) -> String {
         unsafe {
             let c_str = tjGetErrorStr2(self.handle);
@@ -189,10 +210,7 @@ mod tests {
         let mut encoder = TurboJpegEncoder::new().unwrap();
 
         // Create a simple 2x2 red image
-        let rgb_data = vec![
-            255, 0, 0, 255, 0, 0,
-            255, 0, 0, 255, 0, 0,
-        ];
+        let rgb_data = vec![255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0];
 
         let result = encoder.compress_rgb(&rgb_data, 2, 2, 90);
         assert!(result.is_ok());

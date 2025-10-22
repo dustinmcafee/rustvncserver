@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! Pixel format translation between server and client formats.
 //!
 //! This module provides pixel format conversion to support VNC clients with different
@@ -29,6 +28,10 @@
 //!
 //! This implementation uses direct pixel translation. Modern Rust's optimizer can generate
 //! very efficient code for this approach, trading a small amount of CPU for significantly
+
+// Allow intentional casts that may truncate - this is pixel format conversion
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::match_same_arms)]
 //! simpler code and lower memory usage compared to lookup table approaches.
 
 use crate::protocol::PixelFormat;
@@ -97,12 +100,12 @@ pub fn translate_pixels(
 fn extract_rgb(pixel: &[u8], format: &PixelFormat) -> (u8, u8, u8) {
     // Read pixel value based on bitsPerPixel
     let pixel_value = match format.bits_per_pixel {
-        8 => pixel[0] as u32,
+        8 => u32::from(pixel[0]),
         16 => {
             if format.big_endian_flag != 0 {
-                u16::from_be_bytes([pixel[0], pixel[1]]) as u32
+                u32::from(u16::from_be_bytes([pixel[0], pixel[1]]))
             } else {
-                u16::from_le_bytes([pixel[0], pixel[1]]) as u32
+                u32::from(u16::from_le_bytes([pixel[0], pixel[1]]))
             }
         }
         32 => {
@@ -115,18 +118,18 @@ fn extract_rgb(pixel: &[u8], format: &PixelFormat) -> (u8, u8, u8) {
         24 => {
             // 24bpp is stored in 3 bytes, but we need to handle it carefully
             if format.big_endian_flag != 0 {
-                (pixel[0] as u32) << 16 | (pixel[1] as u32) << 8 | (pixel[2] as u32)
+                u32::from(pixel[0]) << 16 | u32::from(pixel[1]) << 8 | u32::from(pixel[2])
             } else {
-                (pixel[2] as u32) << 16 | (pixel[1] as u32) << 8 | (pixel[0] as u32)
+                u32::from(pixel[2]) << 16 | u32::from(pixel[1]) << 8 | u32::from(pixel[0])
             }
         }
-        _ => pixel[0] as u32, // Fallback for unsupported formats
+        _ => u32::from(pixel[0]), // Fallback for unsupported formats
     };
 
     // Extract color components using shifts and masks
-    let r_raw = (pixel_value >> format.red_shift) & format.red_max as u32;
-    let g_raw = (pixel_value >> format.green_shift) & format.green_max as u32;
-    let b_raw = (pixel_value >> format.blue_shift) & format.blue_max as u32;
+    let r_raw = (pixel_value >> format.red_shift) & u32::from(format.red_max);
+    let g_raw = (pixel_value >> format.green_shift) & u32::from(format.green_max);
+    let b_raw = (pixel_value >> format.blue_shift) & u32::from(format.blue_max);
 
     // Scale to 8-bit (0-255) range
     let r = scale_component(r_raw, format.red_max);
@@ -152,10 +155,9 @@ fn pack_pixel(dst: &mut BytesMut, r: u8, g: u8, b: u8, format: &PixelFormat) {
     let b_scaled = downscale_component(b, format.blue_max);
 
     // Combine components with shifts
-    let pixel_value =
-        ((r_scaled as u32) << format.red_shift)
-        | ((g_scaled as u32) << format.green_shift)
-        | ((b_scaled as u32) << format.blue_shift);
+    let pixel_value = (u32::from(r_scaled) << format.red_shift)
+        | (u32::from(g_scaled) << format.green_shift)
+        | (u32::from(b_scaled) << format.blue_shift);
 
     // Write pixel value based on bitsPerPixel and endianness
     match format.bits_per_pixel {
@@ -173,9 +175,17 @@ fn pack_pixel(dst: &mut BytesMut, r: u8, g: u8, b: u8, format: &PixelFormat) {
         24 => {
             // 24bpp: write 3 bytes
             let bytes = if format.big_endian_flag != 0 {
-                [(pixel_value >> 16) as u8, (pixel_value >> 8) as u8, pixel_value as u8]
+                [
+                    (pixel_value >> 16) as u8,
+                    (pixel_value >> 8) as u8,
+                    pixel_value as u8,
+                ]
             } else {
-                [pixel_value as u8, (pixel_value >> 8) as u8, (pixel_value >> 16) as u8]
+                [
+                    pixel_value as u8,
+                    (pixel_value >> 8) as u8,
+                    (pixel_value >> 16) as u8,
+                ]
             };
             dst.extend_from_slice(&bytes);
         }
@@ -215,7 +225,7 @@ fn scale_component(value: u32, max: u16) -> u8 {
 
     // Scale: value * 255 / max
     // Use 64-bit to avoid overflow
-    ((value as u64 * 255) / max as u64) as u8
+    ((u64::from(value) * 255) / u64::from(max)) as u8
 }
 
 /// Downscales a color component from 8-bit (0-255) to the format-specific range.
@@ -234,12 +244,12 @@ fn downscale_component(value: u8, max: u16) -> u16 {
         return 0;
     }
     if max == 255 {
-        return value as u16;
+        return u16::from(value);
     }
 
     // Downscale: value * max / 255
     // Use 32-bit to avoid overflow
-    ((value as u32 * max as u32) / 255) as u16
+    ((u32::from(value) * u32::from(max)) / 255) as u16
 }
 
 /// Checks if two pixel formats are identical (no translation needed).
@@ -291,9 +301,9 @@ mod tests {
             depth: 16,
             big_endian_flag: 0,
             true_colour_flag: 1,
-            red_max: 31,    // 5 bits
-            green_max: 63,  // 6 bits
-            blue_max: 31,   // 5 bits
+            red_max: 31,   // 5 bits
+            green_max: 63, // 6 bits
+            blue_max: 31,  // 5 bits
             red_shift: 11,
             green_shift: 5,
             blue_shift: 0,

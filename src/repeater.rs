@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! VNC Repeater support for establishing reverse connections.
 //!
 //! This module implements the UltraVNC-style repeater protocol, which enables VNC servers
@@ -34,13 +33,13 @@
 //! This module is typically used through the VNC server's `connect_repeater` method,
 //! which handles the repeater handshake and then establishes a normal VNC client session.
 
-use tokio::net::TcpStream;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use log::{info, error};
+use log::{error, info};
 use std::io;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 
-use crate::client::{VncClient, ClientEvent};
+use crate::client::{ClientEvent, VncClient};
 use crate::framebuffer::Framebuffer;
 
 /// Connects to a VNC repeater using the UltraVNC-style repeater protocol.
@@ -66,6 +65,7 @@ use crate::framebuffer::Framebuffer;
 /// the VNC handshake completes, returning the initialized `VncClient` instance.
 /// Returns `Err(io::Error)` if a network error occurs, the repeater ID is too long,
 /// or if the VNC handshake fails.
+#[allow(clippy::too_many_arguments)] // VNC repeater connection requires all client configuration parameters
 pub async fn connect_repeater(
     client_id: usize,
     repeater_host: String,
@@ -76,20 +76,17 @@ pub async fn connect_repeater(
     password: Option<String>,
     event_tx: mpsc::UnboundedSender<ClientEvent>,
 ) -> Result<VncClient, io::Error> {
-    info!(
-        "Connecting to VNC repeater {}:{} with ID: {}",
-        repeater_host, repeater_port, repeater_id
-    );
+    info!("Connecting to VNC repeater {repeater_host}:{repeater_port} with ID: {repeater_id}");
 
     // Connect to repeater
-    info!("Attempting TCP connection to {}:{}...", repeater_host, repeater_port);
-    let mut stream = match TcpStream::connect(format!("{}:{}", repeater_host, repeater_port)).await {
+    info!("Attempting TCP connection to {repeater_host}:{repeater_port}...");
+    let mut stream = match TcpStream::connect(format!("{repeater_host}:{repeater_port}")).await {
         Ok(s) => {
-            info!("TCP connection established to {}:{}", repeater_host, repeater_port);
+            info!("TCP connection established to {repeater_host}:{repeater_port}");
             s
         }
         Err(e) => {
-            error!("Failed to establish TCP connection to {}:{}: {}", repeater_host, repeater_port, e);
+            error!("Failed to establish TCP connection to {repeater_host}:{repeater_port}: {e}");
             return Err(e);
         }
     };
@@ -98,7 +95,7 @@ pub async fn connect_repeater(
     // The repeater protocol expects exactly 250 bytes with the ID string
     // prefixed by "ID:" and the remainder filled with null bytes
     let mut id_buffer = [0u8; 250];
-    let id_string = format!("ID:{}", repeater_id);
+    let id_string = format!("ID:{repeater_id}");
 
     // Validate ID length - buffer is 250 bytes, so ID string can be up to 250 bytes
     if id_string.len() > 250 {
@@ -112,16 +109,24 @@ pub async fn connect_repeater(
     id_buffer[..id_string.len()].copy_from_slice(id_string.as_bytes());
 
     // Send ID to repeater
-    info!("Sending repeater ID: {}", id_string);
+    info!("Sending repeater ID: {id_string}");
     if let Err(e) = stream.write_all(&id_buffer).await {
-        error!("Failed to send repeater ID to {}:{}: {}", repeater_host, repeater_port, e);
+        error!("Failed to send repeater ID to {repeater_host}:{repeater_port}: {e}");
         return Err(e);
     }
 
     info!("Repeater ID sent, proceeding with VNC handshake");
 
     // Now proceed with normal VNC client handshake
-    let mut client = VncClient::new(client_id, stream, framebuffer, desktop_name, password, event_tx).await?;
+    let mut client = VncClient::new(
+        client_id,
+        stream,
+        framebuffer,
+        desktop_name,
+        password,
+        event_tx,
+    )
+    .await?;
 
     // Set repeater metadata for client management APIs
     client.set_repeater_metadata(repeater_id, Some(repeater_port));

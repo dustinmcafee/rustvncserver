@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 //! Common helper functions shared across multiple VNC encodings.
 
 use bytes::{BufMut, BytesMut};
@@ -34,19 +33,21 @@ pub struct Subrect {
 }
 
 /// Convert RGBA (4 bytes/pixel) to RGB24 pixel values in VNC pixel format.
-/// Our pixel format has: red_shift=0, green_shift=8, blue_shift=16, little-endian
+/// Our pixel format has: `red_shift=0`, `green_shift=8`, `blue_shift=16`, little-endian
 /// So pixel = (R << 0) | (G << 8) | (B << 16) = 0x00BBGGRR
+#[must_use]
 pub fn rgba_to_rgb24_pixels(data: &[u8]) -> Vec<u32> {
     data.chunks_exact(4)
         .map(|chunk| {
-            (chunk[0] as u32) | // R at bits 0-7
-            ((chunk[1] as u32) << 8)  | // G at bits 8-15
-            ((chunk[2] as u32) << 16)   // B at bits 16-23
+            u32::from(chunk[0]) | // R at bits 0-7
+            (u32::from(chunk[1]) << 8)  | // G at bits 8-15
+            (u32::from(chunk[2]) << 16) // B at bits 16-23
         })
         .collect()
 }
 
 /// Find the most common color in the pixel array.
+#[must_use]
 pub fn get_background_color(pixels: &[u32]) -> u32 {
     if pixels.is_empty() {
         return 0;
@@ -57,13 +58,15 @@ pub fn get_background_color(pixels: &[u32]) -> u32 {
         *counts.entry(pixel).or_insert(0) += 1;
     }
 
-    counts.into_iter()
+    counts
+        .into_iter()
         .max_by_key(|(_, count)| *count)
-        .map(|(color, _)| color)
-        .unwrap_or(pixels[0])
+        .map_or(pixels[0], |(color, _)| color)
 }
 
 /// Find subrectangles of non-background pixels.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // Subrect coordinates limited to tile dimensions (max 16x16)
 pub fn find_subrects(pixels: &[u32], width: usize, height: usize, bg_color: u32) -> Vec<Subrect> {
     let mut subrects = Vec::new();
     let mut marked = vec![false; pixels.len()];
@@ -150,7 +153,15 @@ pub fn find_subrects(pixels: &[u32], width: usize, height: usize, bg_color: u32)
 }
 
 /// Extract a tile from the pixel array.
-pub fn extract_tile(pixels: &[u32], width: usize, x: usize, y: usize, tw: usize, th: usize) -> Vec<u32> {
+#[must_use]
+pub fn extract_tile(
+    pixels: &[u32],
+    width: usize,
+    x: usize,
+    y: usize,
+    tw: usize,
+    th: usize,
+) -> Vec<u32> {
     let mut tile = Vec::with_capacity(tw * th);
     for dy in 0..th {
         for dx in 0..tw {
@@ -161,7 +172,8 @@ pub fn extract_tile(pixels: &[u32], width: usize, x: usize, y: usize, tw: usize,
 }
 
 /// Analyze tile colors to determine if solid, monochrome, or multicolor.
-/// Returns: (is_solid, is_mono, bg_color, fg_color)
+/// Returns: (`is_solid`, `is_mono`, `bg_color`, `fg_color`)
+#[must_use]
 pub fn analyze_tile_colors(pixels: &[u32]) -> (bool, bool, u32, u32) {
     if pixels.is_empty() {
         return (true, true, 0, 0);
@@ -190,7 +202,7 @@ pub fn analyze_tile_colors(pixels: &[u32]) -> (bool, bool, u32, u32) {
 /// Pixel format: R at bits 0-7, G at bits 8-15, B at bits 16-23, unused at bits 24-31
 /// For 32bpp client: writes [R, G, B, 0] in that order
 pub fn put_pixel32(buf: &mut BytesMut, pixel: u32) {
-    buf.put_u32_le(pixel);  // Write full 32-bit pixel in little-endian format
+    buf.put_u32_le(pixel); // Write full 32-bit pixel in little-endian format
 }
 
 /// Write a 24-bit pixel value to buffer in RGB24 format (3 bytes).
@@ -198,12 +210,13 @@ pub fn put_pixel32(buf: &mut BytesMut, pixel: u32) {
 /// Implements 24-bit pixel packing as specified in RFC 6143.
 /// Writes [R, G, B] in that order (3 bytes total).
 pub fn put_pixel24(buf: &mut BytesMut, pixel: u32) {
-    buf.put_u8((pixel & 0xFF) as u8);        // R
+    buf.put_u8((pixel & 0xFF) as u8); // R
     buf.put_u8(((pixel >> 8) & 0xFF) as u8); // G
     buf.put_u8(((pixel >> 16) & 0xFF) as u8); // B
 }
 
 /// Check if all pixels are the same color.
+#[must_use]
 pub fn check_solid_color(pixels: &[u32]) -> Option<u32> {
     if pixels.is_empty() {
         return None;
@@ -218,6 +231,7 @@ pub fn check_solid_color(pixels: &[u32]) -> Option<u32> {
 }
 
 /// Build a color palette from pixels.
+#[must_use]
 pub fn build_palette(pixels: &[u32]) -> Vec<u32> {
     let mut colors: HashMap<u32, usize> = HashMap::new();
     for &pixel in pixels {
