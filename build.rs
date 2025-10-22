@@ -61,8 +61,15 @@ fn main() {
             println!("cargo:rustc-link-lib=turbojpeg");
         }
         "windows" => {
-            // On Windows, turbojpeg linking is typically handled differently
-            // This is a placeholder for future Windows support
+            // On Windows, turbojpeg is typically installed via vcpkg
+            // Check for VCPKG_ROOT environment variable
+            if let Ok(vcpkg_root) = env::var("VCPKG_ROOT") {
+                let lib_path = format!("{}\\installed\\x64-windows\\lib", vcpkg_root);
+                println!("cargo:rustc-link-search=native={}", lib_path);
+            } else if let Ok(vcpkg_root) = env::var("VCPKG_INSTALLATION_ROOT") {
+                let lib_path = format!("{}\\installed\\x64-windows\\lib", vcpkg_root);
+                println!("cargo:rustc-link-search=native={}", lib_path);
+            }
             println!("cargo:rustc-link-lib=turbojpeg");
         }
         _ => {
