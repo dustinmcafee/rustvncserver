@@ -96,7 +96,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustvncserver = "1.0"
+rustvncserver = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -104,7 +104,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ```toml
 [dependencies]
-rustvncserver = { version = "1.0", features = ["turbojpeg"] }
+rustvncserver = { version = "1.1", features = ["turbojpeg"] }
 ```
 
 **Features:**
