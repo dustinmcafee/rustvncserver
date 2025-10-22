@@ -890,7 +890,7 @@ impl VncClient {
 
         #[cfg_attr(
             not(feature = "debug-logging"),
-            allow(unused_variables, unused_assignments)
+            allow(unused_variables, unused_assignments, unused_mut)
         )]
         let mut encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
@@ -1120,7 +1120,10 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIB encoding failed: {e}, falling back to RAW");
-                        encoding_name = "RAW";
+                        #[cfg(feature = "debug-logging")]
+                        {
+                            encoding_name = "RAW";
+                        }
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1165,7 +1168,10 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIBHEX encoding failed: {e}, falling back to RAW");
-                        encoding_name = "RAW";
+                        #[cfg(feature = "debug-logging")]
+                        {
+                            encoding_name = "RAW";
+                        }
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1212,7 +1218,10 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZRLE encoding failed: {e}, falling back to RAW");
-                        encoding_name = "RAW";
+                        #[cfg(feature = "debug-logging")]
+                        {
+                            encoding_name = "RAW";
+                        }
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1280,7 +1289,10 @@ impl VncClient {
                         Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
                         Err(e) => {
                             error!("ZYWRLE encoding failed: {e}, falling back to RAW");
-                            encoding_name = "RAW";
+                            #[cfg(feature = "debug-logging")]
+                            {
+                                encoding_name = "RAW";
+                            }
                             // translated already contains the correctly formatted data
                             (ENCODING_RAW, translated)
                         }
@@ -1288,7 +1300,10 @@ impl VncClient {
                 } else {
                     // Analysis failed (dimensions too small), fall back to RAW with translation
                     error!("ZYWRLE analysis failed (dimensions too small), falling back to RAW");
-                    encoding_name = "RAW";
+                    #[cfg(feature = "debug-logging")]
+                    {
+                        encoding_name = "RAW";
+                    }
                     // Translate original pixel_data for RAW fallback
                     let translated = if client_pixel_format.is_compatible_with_rgba32() {
                         let mut buf = BytesMut::with_capacity(
@@ -1359,8 +1374,11 @@ impl VncClient {
             } else {
                 // Fallback to RAW encoding if preferred encoding is not available
                 error!("Encoding {preferred_encoding} not available, falling back to RAW");
-                encoding_name = "RAW"; // Update encoding name to reflect fallback
-                                       // Translate for RAW fallback
+                #[cfg(feature = "debug-logging")]
+                {
+                    encoding_name = "RAW"; // Update encoding name to reflect fallback
+                }
+                // Translate for RAW fallback
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     let mut buf = BytesMut::with_capacity(
                         (region.width as usize * region.height as usize) * 4,
