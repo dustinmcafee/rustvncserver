@@ -36,6 +36,14 @@ use std::io;
 /// the newline character as specified by the RFB protocol.
 pub const PROTOCOL_VERSION: &str = "RFB 003.008\n";
 
+/// Maximum framebuffer update buffer size in bytes (32KB).
+///
+/// This limit matches the reference VNC implementation and helps prevent
+/// overwhelming clients or network infrastructure with very large updates.
+/// When an update would exceed this size, it should be split into multiple
+/// `FramebufferUpdate` messages.
+pub const UPDATE_BUF_SIZE: usize = 32768;
+
 // Client-to-Server Message Types
 
 /// Message type: Client requests to change the pixel format.
@@ -658,10 +666,25 @@ impl Rectangle {
     ///
     /// * `buf` - The buffer to write the header into.
     pub fn write_header(&self, buf: &mut BytesMut) {
+        // VNC protocol requires big-endian (network byte order) for all multi-byte integers
+        let start_len = buf.len();
         buf.put_u16(self.x);
         buf.put_u16(self.y);
         buf.put_u16(self.width);
         buf.put_u16(self.height);
         buf.put_i32(self.encoding);
+
+        #[cfg(feature = "debug-logging")]
+        {
+            let header_bytes = &buf[start_len..];
+            log::info!("Rectangle header bytes: x={} y={} w={} h={} enc={} -> [{:02x} {:02x}] [{:02x} {:02x}] [{:02x} {:02x}] [{:02x} {:02x}] [{:02x} {:02x} {:02x} {:02x}]",
+                self.x, self.y, self.width, self.height, self.encoding,
+                header_bytes[0], header_bytes[1],  // x
+                header_bytes[2], header_bytes[3],  // y
+                header_bytes[4], header_bytes[5],  // width
+                header_bytes[6], header_bytes[7],  // height
+                header_bytes[8], header_bytes[9], header_bytes[10], header_bytes[11]  // encoding
+            );
+        }
     }
 }

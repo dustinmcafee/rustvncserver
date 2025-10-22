@@ -65,14 +65,12 @@
 //! TIGHT_MAX_RECT_WIDTH = 2048     (max rectangle width)
 //! ```
 
-use super::common::put_pixel24;
+use super::common::translate_pixel_to_client_format;
 use super::Encoding;
+use crate::protocol::PixelFormat;
 use bytes::{BufMut, BytesMut};
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
 use log::info;
 use std::collections::HashMap;
-use std::io::Write;
 
 // Tight encoding protocol constants (RFC 6143 section 7.7.4)
 const TIGHT_EXPLICIT_FILTER: u8 = 0x04;
@@ -161,13 +159,27 @@ impl Encoding for TightEncoding {
         compression: u8,
     ) -> BytesMut {
         // Simple wrapper - for full optimization, use encode_rect_optimized
+        // Default to RGBA32 format for backward compatibility (old API doesn't have client format)
+        // Create a temporary compressor for this call (old API doesn't have persistent streams)
+        use crate::client::TightZlibStreams;
+        let mut compressor = TightZlibStreams::new();
+
         let rect = Rect {
             x: 0,
             y: 0,
             w: width,
             h: height,
         };
-        let result = encode_rect_optimized(data, width, &rect, quality, compression);
+        let default_format = PixelFormat::rgba32();
+        let result = encode_rect_optimized(
+            data,
+            width,
+            &rect,
+            quality,
+            compression,
+            &default_format,
+            &mut compressor,
+        );
 
         // Concatenate all rectangles
         let mut output = BytesMut::new();
@@ -183,55 +195,156 @@ impl Encoding for TightEncoding {
 #[allow(clippy::similar_names)] // dx_end and dy_end are clear in context (delta x/y end coordinates)
 #[allow(clippy::too_many_lines)] // Complex algorithm implementing RFC 6143 Tight encoding optimization
 #[allow(clippy::cast_possible_truncation)] // Rectangle dimensions limited to u16 per VNC protocol
-fn encode_rect_optimized(
+fn encode_rect_optimized<C: TightStreamCompressor>(
     framebuffer: &[u8],
     fb_width: u16,
     rect: &Rect,
     quality: u8,
     compression: u8,
+    client_format: &PixelFormat,
+    compressor: &mut C,
 ) -> EncodeResult {
+    #[cfg(feature = "debug-logging")]
+    log::info!("DEBUG: encode_rect_optimized called: rect={}x{} at ({}, {}), quality={}, compression={}, bpp={}",
+        rect.w, rect.h, rect.x, rect.y, quality, compression, client_format.bits_per_pixel);
+
     let mut rectangles = Vec::new();
 
     // Normalize compression level based on quality settings
     let compression = normalize_compression_level(compression, quality);
 
+    #[cfg(feature = "debug-logging")]
+    log::info!("DEBUG: normalized compression={compression}");
+
     // Check if optimization should be applied
-    if (rect.w as usize * rect.h as usize) < MIN_SPLIT_RECT_SIZE {
-        // Too small - encode directly
-        let buf = encode_subrect(framebuffer, fb_width, rect, quality, compression);
-        rectangles.push((rect.clone(), buf));
+    let rect_size = rect.w as usize * rect.h as usize;
+
+    #[cfg(feature = "debug-logging")]
+    log::info!("DEBUG: rect_size={rect_size}, MIN_SPLIT_RECT_SIZE={MIN_SPLIT_RECT_SIZE}");
+
+    if rect_size < MIN_SPLIT_RECT_SIZE {
+        #[cfg(feature = "debug-logging")]
+        log::info!("DEBUG: Rectangle too small for optimization");
+
+        // Too small for optimization - but still check if it needs splitting due to size limits
+        if rect.w > TIGHT_MAX_RECT_WIDTH
+            || ((rect.w as usize) * (rect.h as usize)) > TIGHT_MAX_RECT_SIZE
+        {
+            #[cfg(feature = "debug-logging")]
+            log::info!("DEBUG: But rectangle needs splitting - calling encode_large_rect");
+
+            // Too large - split it
+            rectangles.extend(encode_large_rect(
+                framebuffer,
+                fb_width,
+                rect,
+                quality,
+                compression,
+                client_format,
+                compressor,
+            ));
+        } else {
+            #[cfg(feature = "debug-logging")]
+            log::info!("DEBUG: Rectangle small enough - encode directly");
+
+            // Small enough - encode directly
+            let buf = encode_subrect_single(
+                framebuffer,
+                fb_width,
+                rect,
+                quality,
+                compression,
+                client_format,
+                compressor,
+            );
+            rectangles.push((rect.clone(), buf));
+        }
+
+        #[cfg(feature = "debug-logging")]
+        log::info!(
+            "DEBUG: encode_rect_optimized returning {} rectangles (early return)",
+            rectangles.len()
+        );
+
         return EncodeResult { rectangles };
     }
+
+    #[cfg(feature = "debug-logging")]
+    log::info!("DEBUG: Rectangle large enough for optimization - continuing");
 
     // Calculate maximum rows per rectangle
     let n_max_width = rect.w.min(TIGHT_MAX_RECT_WIDTH);
     let n_max_rows = (TIGHT_MAX_RECT_SIZE / n_max_width as usize) as u16;
 
     // Try to find large solid-color areas for optimization
+    // Track the current scan position and base position (like C code's y and h)
     let mut current_y = rect.y;
-    let mut remaining_h = rect.h;
+    let mut base_y = rect.y; // Corresponds to C code's 'y' variable
+    let mut remaining_h = rect.h; // Corresponds to C code's 'h' variable
 
-    while current_y < rect.y + rect.h {
-        // Check if rectangle becomes too large
-        if (current_y - rect.y) >= n_max_rows {
+    #[cfg(feature = "debug-logging")]
+    log::info!(
+        "DEBUG: Starting optimization loop, rect.y={}, rect.h={}",
+        rect.y,
+        rect.h
+    );
+
+    while current_y < base_y + remaining_h {
+        #[cfg(feature = "debug-logging")]
+        log::info!("DEBUG: Loop iteration: current_y={current_y}, base_y={base_y}, remaining_h={remaining_h}");
+        // Check if rectangle becomes too large (like C code: if (dy - y >= nMaxRows))
+        if (current_y - base_y) >= n_max_rows {
             let chunk_rect = Rect {
                 x: rect.x,
-                y: rect.y + (current_y - rect.y - n_max_rows),
+                y: base_y, // Send from base_y, not from calculated position
                 w: rect.w,
                 h: n_max_rows,
             };
-            let buf = encode_subrect(framebuffer, fb_width, &chunk_rect, quality, compression);
-            rectangles.push((chunk_rect, buf));
+            // Chunk might still be too wide - check and split if needed
+            if chunk_rect.w > TIGHT_MAX_RECT_WIDTH {
+                rectangles.extend(encode_large_rect(
+                    framebuffer,
+                    fb_width,
+                    &chunk_rect,
+                    quality,
+                    compression,
+                    client_format,
+                    compressor,
+                ));
+            } else {
+                let buf = encode_subrect_single(
+                    framebuffer,
+                    fb_width,
+                    &chunk_rect,
+                    quality,
+                    compression,
+                    client_format,
+                    compressor,
+                );
+                rectangles.push((chunk_rect, buf));
+            }
+            // Like C code: y += nMaxRows; h -= nMaxRows;
+            base_y += n_max_rows;
             remaining_h -= n_max_rows;
         }
 
-        let dy_end = (current_y + MAX_SPLIT_TILE_SIZE).min(rect.y + rect.h);
+        let dy_end = (current_y + MAX_SPLIT_TILE_SIZE).min(base_y + remaining_h);
         let dh = dy_end - current_y;
+
+        // Safety check: if dh is 0, we've reached the end
+        if dh == 0 {
+            break;
+        }
 
         let mut current_x = rect.x;
         while current_x < rect.x + rect.w {
             let dx_end = (current_x + MAX_SPLIT_TILE_SIZE).min(rect.x + rect.w);
             let dw = dx_end - current_x;
+
+            // Safety check: if dw is 0, we've reached the end
+            if dw == 0 {
+                break;
+            }
 
             // Check if tile is solid
             if let Some(color_value) =
@@ -244,7 +357,7 @@ fn encode_rect_optimized(
                     current_x,
                     current_y,
                     rect.w - (current_x - rect.x),
-                    remaining_h - (current_y - rect.y),
+                    remaining_h - (current_y - base_y),
                     color_value,
                 );
 
@@ -256,12 +369,12 @@ fn encode_rect_optimized(
                     continue;
                 }
 
-                // Extend solid area
+                // Extend solid area (use base_y instead of rect.y for coordinates)
                 let (x_best, y_best, w_best, h_best) = extend_solid_area(
                     framebuffer,
                     fb_width,
                     rect.x,
-                    current_y,
+                    base_y,
                     rect.w,
                     remaining_h,
                     color_value,
@@ -272,16 +385,38 @@ fn encode_rect_optimized(
                 );
 
                 // Send rectangles before solid area
-                if y_best != current_y {
+                if y_best != base_y {
                     let top_rect = Rect {
                         x: rect.x,
-                        y: current_y,
+                        y: base_y,
                         w: rect.w,
-                        h: y_best - current_y,
+                        h: y_best - base_y,
                     };
-                    let buf =
-                        encode_subrect(framebuffer, fb_width, &top_rect, quality, compression);
-                    rectangles.push((top_rect, buf));
+                    // top_rect might be too wide - check and split if needed
+                    if top_rect.w > TIGHT_MAX_RECT_WIDTH
+                        || ((top_rect.w as usize) * (top_rect.h as usize)) > TIGHT_MAX_RECT_SIZE
+                    {
+                        rectangles.extend(encode_large_rect(
+                            framebuffer,
+                            fb_width,
+                            &top_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        ));
+                    } else {
+                        let buf = encode_subrect_single(
+                            framebuffer,
+                            fb_width,
+                            &top_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        );
+                        rectangles.push((top_rect, buf));
+                    }
                 }
 
                 if x_best != rect.x {
@@ -291,14 +426,31 @@ fn encode_rect_optimized(
                         w: x_best - rect.x,
                         h: h_best,
                     };
-                    let sub_result = encode_rect_optimized(
-                        framebuffer,
-                        fb_width,
-                        &left_rect,
-                        quality,
-                        compression,
-                    );
-                    rectangles.extend(sub_result.rectangles);
+                    // Don't recursively optimize - just check size and encode
+                    if left_rect.w > TIGHT_MAX_RECT_WIDTH
+                        || ((left_rect.w as usize) * (left_rect.h as usize)) > TIGHT_MAX_RECT_SIZE
+                    {
+                        rectangles.extend(encode_large_rect(
+                            framebuffer,
+                            fb_width,
+                            &left_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        ));
+                    } else {
+                        let buf = encode_subrect_single(
+                            framebuffer,
+                            fb_width,
+                            &left_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        );
+                        rectangles.push((left_rect, buf));
+                    }
                 }
 
                 // Send solid rectangle
@@ -308,7 +460,7 @@ fn encode_rect_optimized(
                     w: w_best,
                     h: h_best,
                 };
-                let buf = encode_solid_rect(color_value);
+                let buf = encode_solid_rect(color_value, client_format);
                 rectangles.push((solid_rect, buf));
 
                 // Send remaining rectangles
@@ -319,31 +471,66 @@ fn encode_rect_optimized(
                         w: rect.w - (x_best - rect.x) - w_best,
                         h: h_best,
                     };
-                    let sub_result = encode_rect_optimized(
-                        framebuffer,
-                        fb_width,
-                        &right_rect,
-                        quality,
-                        compression,
-                    );
-                    rectangles.extend(sub_result.rectangles);
+                    // Don't recursively optimize - just check size and encode
+                    if right_rect.w > TIGHT_MAX_RECT_WIDTH
+                        || ((right_rect.w as usize) * (right_rect.h as usize)) > TIGHT_MAX_RECT_SIZE
+                    {
+                        rectangles.extend(encode_large_rect(
+                            framebuffer,
+                            fb_width,
+                            &right_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        ));
+                    } else {
+                        let buf = encode_subrect_single(
+                            framebuffer,
+                            fb_width,
+                            &right_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        );
+                        rectangles.push((right_rect, buf));
+                    }
                 }
 
-                if y_best + h_best != current_y + remaining_h {
+                if y_best + h_best != base_y + remaining_h {
                     let bottom_rect = Rect {
                         x: rect.x,
                         y: y_best + h_best,
                         w: rect.w,
-                        h: remaining_h - (y_best - current_y) - h_best,
+                        h: remaining_h - (y_best - base_y) - h_best,
                     };
-                    let sub_result = encode_rect_optimized(
-                        framebuffer,
-                        fb_width,
-                        &bottom_rect,
-                        quality,
-                        compression,
-                    );
-                    rectangles.extend(sub_result.rectangles);
+                    // Don't recursively optimize - just check size and encode
+                    if bottom_rect.w > TIGHT_MAX_RECT_WIDTH
+                        || ((bottom_rect.w as usize) * (bottom_rect.h as usize))
+                            > TIGHT_MAX_RECT_SIZE
+                    {
+                        rectangles.extend(encode_large_rect(
+                            framebuffer,
+                            fb_width,
+                            &bottom_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        ));
+                    } else {
+                        let buf = encode_subrect_single(
+                            framebuffer,
+                            fb_width,
+                            &bottom_rect,
+                            quality,
+                            compression,
+                            client_format,
+                            compressor,
+                        );
+                        rectangles.push((bottom_rect, buf));
+                    }
                 }
 
                 return EncodeResult { rectangles };
@@ -352,12 +539,56 @@ fn encode_rect_optimized(
             current_x += dw;
         }
 
+        #[cfg(feature = "debug-logging")]
+        log::info!("DEBUG: End of inner loop, incrementing current_y by dh={dh}");
+
         current_y += dh;
+
+        #[cfg(feature = "debug-logging")]
+        log::info!("DEBUG: After increment: current_y={current_y}");
     }
 
-    // No solid areas found - encode normally
-    let buf = encode_subrect(framebuffer, fb_width, rect, quality, compression);
-    rectangles.push((rect.clone(), buf));
+    #[cfg(feature = "debug-logging")]
+    log::info!("DEBUG: Exited optimization loop, no solid areas found");
+
+    // No solid areas found - encode normally (but check if it needs splitting)
+    if rect.w > TIGHT_MAX_RECT_WIDTH
+        || ((rect.w as usize) * (rect.h as usize)) > TIGHT_MAX_RECT_SIZE
+    {
+        #[cfg(feature = "debug-logging")]
+        log::info!("DEBUG: Rectangle needs splitting, calling encode_large_rect");
+
+        rectangles.extend(encode_large_rect(
+            framebuffer,
+            fb_width,
+            rect,
+            quality,
+            compression,
+            client_format,
+            compressor,
+        ));
+    } else {
+        #[cfg(feature = "debug-logging")]
+        log::info!("DEBUG: Rectangle small enough, encoding directly");
+
+        let buf = encode_subrect_single(
+            framebuffer,
+            fb_width,
+            rect,
+            quality,
+            compression,
+            client_format,
+            compressor,
+        );
+        rectangles.push((rect.clone(), buf));
+    }
+
+    #[cfg(feature = "debug-logging")]
+    log::info!(
+        "DEBUG: encode_rect_optimized returning {} rectangles (normal return)",
+        rectangles.len()
+    );
+
     EncodeResult { rectangles }
 }
 
@@ -366,17 +597,19 @@ fn encode_rect_optimized(
 fn normalize_compression_level(compression: u8, quality: u8) -> u8 {
     let mut level = compression;
 
-    // Map compression level 0-9 to 0-3 (configuration array indices)
+    // JPEG enabled (quality < 10): enforce minimum level 1, maximum level 2
+    // This ensures better compression performance with JPEG
+    if quality < 10 {
+        level = level.clamp(1, 2);
+    }
+    // JPEG disabled (quality >= 10): cap at level 1
+    else if level > 1 {
+        level = 1;
+    }
+
+    // Map level 9 to 3 for backward compatibility (low-bandwidth mode)
     if level == 9 {
         level = 3;
-    } else if level > 1 {
-        if quality < 10 {
-            // JPEG enabled - allow level 2
-            level = level.min(2);
-        } else {
-            // JPEG disabled - cap at level 1
-            level = level.min(1);
-        }
     }
 
     level
@@ -384,19 +617,17 @@ fn normalize_compression_level(compression: u8, quality: u8) -> u8 {
 
 /// Low-level encoding: analyze and encode a single subrectangle
 /// Analyzes palette and selects optimal encoding mode
-fn encode_subrect(
+/// Never splits - assumes rectangle is within size limits
+fn encode_subrect_single<C: TightStreamCompressor>(
     framebuffer: &[u8],
     fb_width: u16,
     rect: &Rect,
     quality: u8,
     compression: u8,
+    client_format: &PixelFormat,
+    compressor: &mut C,
 ) -> BytesMut {
-    // Split if too large
-    if rect.w > TIGHT_MAX_RECT_WIDTH
-        || ((rect.w as usize) * (rect.h as usize)) > TIGHT_MAX_RECT_SIZE
-    {
-        return encode_large_rect(framebuffer, fb_width, rect, quality, compression);
-    }
+    // This function assumes rect is within size limits (called from encode_large_rect or for small rects)
 
     // Extract pixel data for this rectangle
     let pixels = extract_rect_rgba(framebuffer, fb_width, rect);
@@ -409,14 +640,16 @@ fn encode_subrect(
         0 => {
             // Truecolor - use JPEG or full-color
             if quality < 10 {
-                encode_jpeg_rect(&pixels, rect.w, rect.h, quality)
+                // Convert VNC quality (0-9, lower is better) to JPEG quality (0-100, higher is better)
+                let jpeg_quality = 95_u8.saturating_sub(quality * 7);
+                encode_jpeg_rect(&pixels, rect.w, rect.h, jpeg_quality, compressor)
             } else {
-                encode_full_color_rect(&pixels, rect.w, rect.h, compression)
+                encode_full_color_rect(&pixels, rect.w, rect.h, compression, compressor)
             }
         }
         1 => {
             // Solid color
-            encode_solid_rect(palette.colors[0])
+            encode_solid_rect(palette.colors[0], client_format)
         }
         2 => {
             // Mono rect (2 colors)
@@ -427,6 +660,8 @@ fn encode_subrect(
                 palette.colors[0],
                 palette.colors[1],
                 compression,
+                client_format,
+                compressor,
             )
         }
         _ => {
@@ -437,25 +672,29 @@ fn encode_subrect(
                 rect.h,
                 &palette.colors[..palette.num_colors],
                 compression,
+                client_format,
+                compressor,
             )
         }
     }
 }
 
 /// Encode large rectangle by splitting it into smaller tiles
-/// Ensures rectangles stay within size limits
+/// Returns a vector of individual rectangles with their encoded data
 #[allow(clippy::cast_possible_truncation)] // Tight max rect size divided by width always fits in u16
-fn encode_large_rect(
+fn encode_large_rect<C: TightStreamCompressor>(
     framebuffer: &[u8],
     fb_width: u16,
     rect: &Rect,
     quality: u8,
     compression: u8,
-) -> BytesMut {
+    client_format: &PixelFormat,
+    compressor: &mut C,
+) -> Vec<(Rect, BytesMut)> {
     let subrect_max_width = rect.w.min(TIGHT_MAX_RECT_WIDTH);
     let subrect_max_height = (TIGHT_MAX_RECT_SIZE / subrect_max_width as usize) as u16;
 
-    let mut output = BytesMut::new();
+    let mut rectangles = Vec::new();
 
     let mut dy = 0;
     while dy < rect.h {
@@ -471,15 +710,24 @@ fn encode_large_rect(
                 h: rh,
             };
 
-            let buf = encode_subrect(framebuffer, fb_width, &sub_rect, quality, compression);
-            output.extend_from_slice(&buf);
+            // Encode this sub-rectangle (recursive call, but sub_rect is guaranteed to be small enough)
+            let buf = encode_subrect_single(
+                framebuffer,
+                fb_width,
+                &sub_rect,
+                quality,
+                compression,
+                client_format,
+                compressor,
+            );
+            rectangles.push((sub_rect, buf));
 
             dx += TIGHT_MAX_RECT_WIDTH;
         }
         dy += subrect_max_height;
     }
 
-    output
+    rectangles
 }
 
 /// Check if a tile is all the same color
@@ -496,11 +744,18 @@ fn check_solid_tile(
     let offset = (y as usize * fb_width as usize + x as usize) * 4;
 
     // Get first pixel color (RGB24)
-    let first_color = rgba_to_rgb24(
-        framebuffer[offset],
-        framebuffer[offset + 1],
-        framebuffer[offset + 2],
-    );
+    let fb_r = framebuffer[offset];
+    let fb_g = framebuffer[offset + 1];
+    let fb_b = framebuffer[offset + 2];
+    let first_color = rgba_to_rgb24(fb_r, fb_g, fb_b);
+
+    #[cfg(feature = "debug-logging")]
+    if x == 0 && y == 0 {
+        // Log first pixel of each solid tile
+        info!("check_solid_tile: fb[{}]=[{:02x},{:02x},{:02x},{:02x}] -> R={:02x} G={:02x} B={:02x} color=0x{:06x}",
+            offset, framebuffer[offset], framebuffer[offset+1], framebuffer[offset+2], framebuffer[offset+3],
+            fb_r, fb_g, fb_b, first_color);
+    }
 
     // Check if we need a specific color
     if let Some(required) = need_same_color {
@@ -738,30 +993,59 @@ fn extract_rect_rgba(framebuffer: &[u8], fb_width: u16, rect: &Rect) -> Vec<u8> 
 }
 
 /// Convert RGBA to RGB24
+/// Matches the format used in `common::rgba_to_rgb24_pixels`
+/// Internal format: 0x00BBGGRR (R at bits 0-7, G at 8-15, B at 16-23)
 #[inline]
 fn rgba_to_rgb24(r: u8, g: u8, b: u8) -> u32 {
-    (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+    u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)
 }
 
 /// Encode solid rectangle
 /// Implements solid fill encoding mode (1 color)
-fn encode_solid_rect(color: u32) -> BytesMut {
-    let mut buf = BytesMut::with_capacity(4);
+/// Uses client's pixel format for color encoding
+fn encode_solid_rect(color: u32, client_format: &PixelFormat) -> BytesMut {
+    let mut buf = BytesMut::with_capacity(16); // Reserve enough for largest pixel format
     buf.put_u8(TIGHT_FILL << 4); // 0x80
-    put_pixel24(&mut buf, color);
-    info!("Tight solid: 0x{:06x}, {} bytes", color, buf.len());
+
+    // Translate color to client's pixel format
+    let color_bytes = translate_pixel_to_client_format(color, client_format);
+
+    #[cfg(feature = "debug-logging")]
+    {
+        let use_24bit = client_format.depth == 24
+            && client_format.red_max == 255
+            && client_format.green_max == 255
+            && client_format.blue_max == 255;
+        info!("Tight solid: color=0x{:06x}, translated bytes={:02x?}, use_24bit={}, client: depth={} bpp={} rshift={} gshift={} bshift={}",
+            color, color_bytes, use_24bit, client_format.depth, client_format.bits_per_pixel,
+            client_format.red_shift, client_format.green_shift, client_format.blue_shift);
+    }
+
+    buf.extend_from_slice(&color_bytes);
+
+    info!(
+        "Tight solid: 0x{:06x}, control=0x{:02x}, color_len={}, total={} bytes",
+        color,
+        TIGHT_FILL << 4,
+        color_bytes.len(),
+        buf.len()
+    );
     buf
 }
 
 /// Encode mono rectangle (2 colors)
 /// Implements monochrome bitmap encoding with palette
-fn encode_mono_rect(
+/// Uses client's pixel format for palette colors
+#[allow(clippy::too_many_arguments)] // All parameters are necessary for proper encoding
+fn encode_mono_rect<C: TightStreamCompressor>(
     pixels: &[u8],
     width: u16,
     height: u16,
     bg: u32,
     fg: u32,
     compression: u8,
+    client_format: &PixelFormat,
+    compressor: &mut C,
 ) -> BytesMut {
     let conf_idx = match compression {
         0 => 0,
@@ -787,26 +1071,48 @@ fn encode_mono_rect(
     buf.put_u8(TIGHT_FILTER_PALETTE);
     buf.put_u8(1); // 2 colors - 1
 
-    // Palette colors
-    put_pixel24(&mut buf, bg);
-    put_pixel24(&mut buf, fg);
+    // Palette colors - translate to client format
+    let bg_bytes = translate_pixel_to_client_format(bg, client_format);
+    let fg_bytes = translate_pixel_to_client_format(fg, client_format);
+
+    #[cfg(feature = "debug-logging")]
+    {
+        let use_24bit = client_format.depth == 24
+            && client_format.red_max == 255
+            && client_format.green_max == 255
+            && client_format.blue_max == 255;
+        info!("Tight mono palette: bg=0x{:06x} -> {:02x?}, fg=0x{:06x} -> {:02x?}, use_24bit={}, depth={} bpp={}",
+            bg, bg_bytes, fg, fg_bytes, use_24bit, client_format.depth, client_format.bits_per_pixel);
+    }
+
+    buf.extend_from_slice(&bg_bytes);
+    buf.extend_from_slice(&fg_bytes);
 
     // Compress data
-    compress_data(&mut buf, &bitmap, zlib_level);
+    compress_data(&mut buf, &bitmap, zlib_level, STREAM_ID_MONO, compressor);
 
-    info!("Tight mono: {}x{}, {} bytes", width, height, buf.len());
+    info!(
+        "Tight mono: {}x{}, {} bytes ({}bpp)",
+        width,
+        height,
+        buf.len(),
+        client_format.bits_per_pixel
+    );
     buf
 }
 
 /// Encode indexed palette rectangle (3-16 colors)
 /// Implements palette-based encoding with color indices
+/// Uses client's pixel format for palette colors
 #[allow(clippy::cast_possible_truncation)] // Palette limited to 16 colors, indices fit in u8
-fn encode_indexed_rect(
+fn encode_indexed_rect<C: TightStreamCompressor>(
     pixels: &[u8],
     width: u16,
     height: u16,
     palette: &[u32],
     compression: u8,
+    client_format: &PixelFormat,
+    compressor: &mut C,
 ) -> BytesMut {
     let conf_idx = match compression {
         0 => 0,
@@ -842,27 +1148,41 @@ fn encode_indexed_rect(
     buf.put_u8(TIGHT_FILTER_PALETTE);
     buf.put_u8((palette.len() - 1) as u8);
 
-    // Palette colors
+    // Palette colors - translate to client format
     for &color in palette {
-        put_pixel24(&mut buf, color);
+        let color_bytes = translate_pixel_to_client_format(color, client_format);
+        buf.extend_from_slice(&color_bytes);
     }
 
     // Compress data
-    compress_data(&mut buf, &indices, zlib_level);
+    compress_data(
+        &mut buf,
+        &indices,
+        zlib_level,
+        STREAM_ID_INDEXED,
+        compressor,
+    );
 
     info!(
-        "Tight indexed: {} colors, {}x{}, {} bytes",
+        "Tight indexed: {} colors, {}x{}, {} bytes ({}bpp)",
         palette.len(),
         width,
         height,
-        buf.len()
+        buf.len(),
+        client_format.bits_per_pixel
     );
     buf
 }
 
 /// Encode full-color rectangle
 /// Implements full-color zlib encoding for truecolor images
-fn encode_full_color_rect(pixels: &[u8], width: u16, height: u16, compression: u8) -> BytesMut {
+fn encode_full_color_rect<C: TightStreamCompressor>(
+    pixels: &[u8],
+    width: u16,
+    height: u16,
+    compression: u8,
+    compressor: &mut C,
+) -> BytesMut {
     let conf_idx = match compression {
         0 => 0,
         1 => 1,
@@ -882,17 +1202,34 @@ fn encode_full_color_rect(pixels: &[u8], width: u16, height: u16, compression: u
     let mut buf = BytesMut::new();
 
     // Control byte
-    if zlib_level == 0 {
-        buf.put_u8(TIGHT_NO_ZLIB << 4);
+    let control_byte = if zlib_level == 0 {
+        TIGHT_NO_ZLIB << 4
     } else {
-        buf.put_u8(STREAM_ID_FULL_COLOR << 4);
-    }
+        STREAM_ID_FULL_COLOR << 4
+    };
+    buf.put_u8(control_byte);
+
+    #[cfg(feature = "debug-logging")]
+    info!(
+        "Tight full-color: {}x{}, zlib_level={}, control_byte=0x{:02x}, rgb_data_len={}",
+        width,
+        height,
+        zlib_level,
+        control_byte,
+        rgb_data.len()
+    );
 
     // Compress data
-    compress_data(&mut buf, &rgb_data, zlib_level);
+    compress_data(
+        &mut buf,
+        &rgb_data,
+        zlib_level,
+        STREAM_ID_FULL_COLOR,
+        compressor,
+    );
 
     info!(
-        "Tight full-color: {}x{}, {} bytes",
+        "Tight full-color: {}x{}, {} bytes total",
         width,
         height,
         buf.len()
@@ -902,7 +1239,13 @@ fn encode_full_color_rect(pixels: &[u8], width: u16, height: u16, compression: u
 
 /// Encode JPEG rectangle
 /// Implements lossy JPEG compression for photographic content
-fn encode_jpeg_rect(pixels: &[u8], width: u16, height: u16, quality: u8) -> BytesMut {
+fn encode_jpeg_rect<C: TightStreamCompressor>(
+    pixels: &[u8],
+    width: u16,
+    height: u16,
+    quality: u8,
+    compressor: &mut C,
+) -> BytesMut {
     #[cfg(feature = "turbojpeg")]
     {
         use crate::jpeg::TurboJpegEncoder;
@@ -921,12 +1264,12 @@ fn encode_jpeg_rect(pixels: &[u8], width: u16, height: u16, quality: u8) -> Byte
                 Ok(data) => data,
                 Err(e) => {
                     info!("TurboJPEG failed: {e}, using full-color");
-                    return encode_full_color_rect(pixels, width, height, 6);
+                    return encode_full_color_rect(pixels, width, height, 6, compressor);
                 }
             },
             Err(e) => {
                 info!("TurboJPEG init failed: {e}, using full-color");
-                return encode_full_color_rect(pixels, width, height, 6);
+                return encode_full_color_rect(pixels, width, height, 6, compressor);
             }
         };
 
@@ -948,16 +1291,33 @@ fn encode_jpeg_rect(pixels: &[u8], width: u16, height: u16, quality: u8) -> Byte
     #[cfg(not(feature = "turbojpeg"))]
     {
         info!("TurboJPEG not enabled, using full-color (quality={quality})");
-        encode_full_color_rect(pixels, width, height, 6)
+        encode_full_color_rect(pixels, width, height, 6, compressor)
     }
 }
 
-/// Compress data with zlib or send uncompressed
+/// Compress data with zlib using persistent streams or send uncompressed
 /// Handles compression based on data size and level settings
-fn compress_data(buf: &mut BytesMut, data: &[u8], zlib_level: u8) {
+///
+/// Uses persistent zlib streams via the `TightStreamCompressor` trait.
+/// Persistent streams maintain their dictionary state across multiple compress operations.
+fn compress_data<C: TightStreamCompressor>(
+    buf: &mut BytesMut,
+    data: &[u8],
+    zlib_level: u8,
+    stream_id: u8,
+    compressor: &mut C,
+) {
+    let before_len = buf.len();
+
     // Data < 12 bytes sent raw WITHOUT length
     if data.len() < TIGHT_MIN_TO_COMPRESS {
         buf.put_slice(data);
+        #[cfg(feature = "debug-logging")]
+        info!(
+            "compress_data: {} bytes < 12, sent raw (no length), buf grew by {} bytes",
+            data.len(),
+            buf.len() - before_len
+        );
         return;
     }
 
@@ -965,20 +1325,37 @@ fn compress_data(buf: &mut BytesMut, data: &[u8], zlib_level: u8) {
     if zlib_level == 0 {
         write_compact_length(buf, data.len());
         buf.put_slice(data);
+        #[cfg(feature = "debug-logging")]
+        info!("compress_data: {} bytes uncompressed (zlib_level=0), with length, buf grew by {} bytes", data.len(), buf.len() - before_len);
         return;
     }
 
-    // Compress with zlib
-    let comp_level = Compression::new(u32::from(zlib_level));
-    let mut encoder = ZlibEncoder::new(Vec::new(), comp_level);
+    // Compress with persistent zlib stream
+    match compressor.compress_tight_stream(stream_id, zlib_level, data) {
+        Ok(compressed) => {
+            write_compact_length(buf, compressed.len());
+            buf.put_slice(&compressed);
+            #[cfg(feature = "debug-logging")]
+            info!(
+                "compress_data: {} bytes compressed to {} using stream {}, buf grew by {} bytes",
+                data.len(),
+                compressed.len(),
+                stream_id,
+                buf.len() - before_len
+            );
+        }
+        Err(e) => {
+            // Compression failed - send uncompressed
+            #[cfg(feature = "debug-logging")]
+            info!(
+                "compress_data: compression FAILED ({}), sending {} bytes uncompressed",
+                e,
+                data.len()
+            );
 
-    if let Ok(compressed) = encoder.write_all(data).and_then(|()| encoder.finish()) {
-        write_compact_length(buf, compressed.len());
-        buf.put_slice(&compressed);
-    } else {
-        // Compression failed - send uncompressed
-        write_compact_length(buf, data.len());
-        buf.put_slice(data);
+            write_compact_length(buf, data.len());
+            buf.put_slice(data);
+        }
     }
 }
 
@@ -1007,17 +1384,18 @@ fn encode_mono_bitmap(pixels: &[u8], width: u16, height: u16, bg: u32) -> Vec<u8
                 byte_val |= 1 << bit_pos;
             }
 
-            if bit_pos == 0 {
+            bit_pos -= 1;
+
+            // Write byte after 8 pixels (when bit_pos becomes -1)
+            if bit_pos < 0 {
                 bitmap[bitmap_idx] = byte_val;
                 bitmap_idx += 1;
                 byte_val = 0;
                 bit_pos = 7;
-            } else {
-                bit_pos -= 1;
             }
         }
 
-        // Write partial byte at end of row
+        // Write partial byte at end of row if width not multiple of 8
         if !w.is_multiple_of(8) {
             bitmap[bitmap_idx] = byte_val;
             bitmap_idx += 1;
@@ -1035,7 +1413,7 @@ fn write_compact_length(buf: &mut BytesMut, len: usize) {
         buf.put_u8(len as u8);
     } else if len < 16384 {
         buf.put_u8(((len & 0x7F) | 0x80) as u8);
-        buf.put_u8(((len >> 7) & 0x7F) as u8);  // Mask to ensure high bit is clear
+        buf.put_u8(((len >> 7) & 0x7F) as u8); // Mask to ensure high bit is clear
     } else {
         buf.put_u8(((len & 0x7F) | 0x80) as u8);
         buf.put_u8((((len >> 7) & 0x7F) | 0x80) as u8);
@@ -1071,17 +1449,114 @@ pub trait TightStreamCompressor {
     ) -> Result<Vec<u8>, String>;
 }
 
+/// Encode Tight with persistent zlib streams, returning individual sub-rectangles
+/// Returns a vector of (x, y, width, height, `encoded_data`) for each sub-rectangle
+///
+/// # Arguments
+/// * `data` - Framebuffer pixel data (RGBA format)
+/// * `width` - Rectangle width
+/// * `height` - Rectangle height
+/// * `quality` - JPEG quality level (0-9, or 10+ to disable JPEG)
+/// * `compression` - Compression level (0-9)
+/// * `client_format` - Client's pixel format for palette color translation
+/// * `compressor` - Zlib stream compressor for persistent compression streams
+pub fn encode_tight_rects<C: TightStreamCompressor>(
+    data: &[u8],
+    width: u16,
+    height: u16,
+    quality: u8,
+    compression: u8,
+    client_format: &PixelFormat,
+    compressor: &mut C,
+) -> Vec<(u16, u16, u16, u16, BytesMut)> {
+    #[cfg(feature = "debug-logging")]
+    log::info!(
+        "DEBUG: encode_tight_rects called: {}x{}, data_len={}, quality={}, compression={}, bpp={}",
+        width,
+        height,
+        data.len(),
+        quality,
+        compression,
+        client_format.bits_per_pixel
+    );
+
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        w: width,
+        h: height,
+    };
+
+    #[cfg(feature = "debug-logging")]
+    log::info!("DEBUG: Calling encode_rect_optimized");
+
+    let result = encode_rect_optimized(
+        data,
+        width,
+        &rect,
+        quality,
+        compression,
+        client_format,
+        compressor,
+    );
+
+    #[cfg(feature = "debug-logging")]
+    log::info!(
+        "DEBUG: encode_rect_optimized returned {} rectangles",
+        result.rectangles.len()
+    );
+
+    // Convert EncodeResult to public format
+    let rects: Vec<(u16, u16, u16, u16, BytesMut)> = result
+        .rectangles
+        .into_iter()
+        .map(|(r, buf)| {
+            #[cfg(feature = "debug-logging")]
+            log::info!(
+                "DEBUG: Sub-rect: {}x{} at ({}, {}), encoded_len={}",
+                r.w,
+                r.h,
+                r.x,
+                r.y,
+                buf.len()
+            );
+            (r.x, r.y, r.w, r.h, buf)
+        })
+        .collect();
+
+    #[cfg(feature = "debug-logging")]
+    log::info!(
+        "DEBUG: encode_tight_rects returning {} rectangles",
+        rects.len()
+    );
+
+    rects
+}
+
 /// Encode Tight with persistent zlib streams (for use with VNC client streams)
+/// Returns concatenated data (legacy API - consider using `encode_tight_rects` instead)
 pub fn encode_tight_with_streams<C: TightStreamCompressor>(
     data: &[u8],
     width: u16,
     height: u16,
     quality: u8,
     compression: u8,
-    _compressor: &mut C,
+    client_format: &PixelFormat,
+    compressor: &mut C,
 ) -> BytesMut {
-    // For now, use standard encoding (persistent streams require more plumbing)
-    // TODO: Integrate persistent compression streams into encode_rect_optimized
-    let encoding = TightEncoding;
-    encoding.encode(data, width, height, quality, compression)
+    // Concatenate all sub-rectangles
+    let rects = encode_tight_rects(
+        data,
+        width,
+        height,
+        quality,
+        compression,
+        client_format,
+        compressor,
+    );
+    let mut output = BytesMut::new();
+    for (_x, _y, _w, _h, buf) in rects {
+        output.extend_from_slice(&buf);
+    }
+    output
 }

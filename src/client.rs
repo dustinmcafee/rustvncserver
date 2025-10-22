@@ -95,7 +95,7 @@ pub enum ClientEvent {
 ///
 /// Each stream maintains its own dictionary and compression level, allowing
 /// dynamic compression parameter changes without reinitializing the stream.
-struct TightZlibStreams {
+pub struct TightZlibStreams {
     /// Array of 4 zlib compression streams
     streams: [Option<Compress>; 4],
     /// Active flag for each stream
@@ -106,7 +106,7 @@ struct TightZlibStreams {
 
 impl TightZlibStreams {
     /// Creates a new `TightZlibStreams` with all streams uninitialized.
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             streams: [None, None, None, None],
             active: [false; 4],
@@ -136,19 +136,16 @@ impl TightZlibStreams {
             self.active[stream_id] = true;
             self.levels[stream_id] = level;
         } else if self.levels[stream_id] != level {
-            // Compression level changed - update it dynamically
-            // Note: flate2 doesn't expose parameter changes directly, so we recreate the stream
-            // This is less efficient but maintains compatibility
-            if let Some(ref mut stream) = self.streams[stream_id] {
-                // Reset the stream with new compression level while preserving dictionary
-                // flate2's reset() preserves the window (dictionary) state
-                stream.reset();
-                // Unfortunately, we can't change compression level without recreating
-                // So we'll recreate the stream (dictionary will be rebuilt)
-                self.streams[stream_id] =
-                    Some(Compress::new(Compression::new(u32::from(level)), true));
-                self.levels[stream_id] = level;
-            }
+            // Compression level changed - Don't recreate the stream!
+            // Changing compression level mid-session with persistent streams is problematic:
+            // - Recreating the stream resets the dictionary, causing client decompression errors
+            // - Using set_level() can corrupt the stream state
+            //
+            // The safest approach: Keep using the ORIGINAL compression level for this stream.
+            // The client's compression level preference mainly affects NEW streams.
+            // This matches behavior of other VNC servers (e.g., TigerVNC).
+            //
+            // Do nothing - keep using self.levels[stream_id]
         }
 
         self.streams[stream_id].as_mut().unwrap()
@@ -158,6 +155,10 @@ impl TightZlibStreams {
     ///
     /// Uses `Z_SYNC_FLUSH` to maintain the dictionary state for subsequent compressions
     /// per RFC 6143 Tight encoding specification.
+    ///
+    /// CRITICAL: This function does NOT reset the stream between calls! The stream maintains
+    /// its dictionary state across multiple compressions, which allows the client to decompress
+    /// the data using the same persistent stream state. This is essential for TIGHT encoding.
     ///
     /// # Arguments
     /// * `stream_id` - The stream ID (0-3)
@@ -173,8 +174,8 @@ impl TightZlibStreams {
         // Prepare output buffer (worst case: input size + overhead)
         let mut output = vec![0u8; input.len() + 64];
 
-        // Compress with Z_SYNC_FLUSH to preserve dictionary
-        stream.reset(); // Reset before each use to clear any leftover state
+        // Compress with Z_SYNC_FLUSH to preserve dictionary for next compression
+        // IMPORTANT: Do NOT reset() the stream! We need to maintain the dictionary state.
         let before_out = stream.total_out();
 
         match stream.compress(input, &mut output, FlushCompress::Sync) {
@@ -550,16 +551,16 @@ impl VncClient {
                                 *self.pixel_format.write().await = requested_format.clone();
 
                                 #[cfg(feature = "debug-logging")]
-                                if requested_format.is_compatible_with_rgba32() {
-                                    info!("Client set pixel format: RGBA32 (no translation needed)");
-                                } else {
+                                {
                                     info!(
-                                        "Client set pixel format: {}bpp, depth {}, R{}:{}  G{}:{} B{}:{} (will translate from RGBA32)",
+                                        "Client set pixel format: {}bpp, depth={}, bigEndian={}, R_shift={} R_max={}, G_shift={} G_max={}, B_shift={} B_max={} - compatible_with_rgba32={}",
                                         requested_format.bits_per_pixel,
                                         requested_format.depth,
+                                        requested_format.big_endian_flag,
                                         requested_format.red_shift, requested_format.red_max,
                                         requested_format.green_shift, requested_format.green_max,
-                                        requested_format.blue_shift, requested_format.blue_max
+                                        requested_format.blue_shift, requested_format.blue_max,
+                                        requested_format.is_compatible_with_rgba32()
                                     );
                                 }
                             }
@@ -889,15 +890,122 @@ impl VncClient {
             .unwrap_or(ENCODING_RAW);
         drop(encodings);
 
-        // Count rectangles for modified regions (accounting for CoRRE tiling)
-        for region in &modified_regions_to_send {
-            if preferred_encoding == ENCODING_CORRE && (region.width > 255 || region.height > 255) {
-                // Count how many tiles this region will be split into
-                let num_tiles_x = region.width.div_ceil(255) as usize;
-                let num_tiles_y = region.height.div_ceil(255) as usize;
-                total_rects += num_tiles_x * num_tiles_y;
-            } else {
-                total_rects += 1;
+        #[cfg(feature = "debug-logging")]
+        info!("DEBUG: preferred_encoding = {preferred_encoding}");
+
+        #[cfg(feature = "debug-logging")]
+        info!(
+            "DEBUG: modified_regions_to_send.len() = {}",
+            modified_regions_to_send.len()
+        );
+
+        #[cfg(feature = "debug-logging")]
+        info!(
+            "DEBUG: copy_regions_to_send.len() = {}",
+            copy_regions_to_send.len()
+        );
+
+        // For TIGHT encoding, pre-encode regions to determine rectangle count
+        let mut tight_encoded_regions = Vec::new();
+        if preferred_encoding == ENCODING_TIGHT {
+            #[cfg(feature = "debug-logging")]
+            info!(
+                "DEBUG: Entering TIGHT pre-encoding block, {} regions",
+                modified_regions_to_send.len()
+            );
+
+            // Get client's pixel format to pass to encoder
+            let pixel_format = self.pixel_format.read().await;
+            let client_format_clone = pixel_format.clone();
+            drop(pixel_format);
+
+            #[cfg(feature = "debug-logging")]
+            info!(
+                "DEBUG: Client pixel format: {}bpp",
+                client_format_clone.bits_per_pixel
+            );
+
+            let mut tight_streams = self.tight_zlib_streams.write().await;
+
+            #[cfg(feature = "debug-logging")]
+            info!("DEBUG: Acquired tight_zlib_streams lock");
+
+            for region in &modified_regions_to_send {
+                #[cfg(feature = "debug-logging")]
+                info!(
+                    "DEBUG: Processing region {}x{} at ({}, {})",
+                    region.width, region.height, region.x, region.y
+                );
+
+                let pixel_data = match self
+                    .framebuffer
+                    .get_rect(region.x, region.y, region.width, region.height)
+                    .await
+                {
+                    Ok(data) => {
+                        #[cfg(feature = "debug-logging")]
+                        info!("DEBUG: Got pixel data, {} bytes", data.len());
+                        data
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to get rectangle ({}, {}, {}, {}): {}",
+                            region.x, region.y, region.width, region.height, e
+                        );
+                        continue;
+                    }
+                };
+
+                #[cfg(feature = "debug-logging")]
+                info!(
+                    "DEBUG: Calling encode_tight_rects for {}x{} with {}bpp",
+                    region.width, region.height, client_format_clone.bits_per_pixel
+                );
+
+                let sub_rects = encoding::tight::encode_tight_rects(
+                    &pixel_data,
+                    region.width,
+                    region.height,
+                    self.quality_level.load(Ordering::Relaxed),
+                    self.compression_level.load(Ordering::Relaxed),
+                    &client_format_clone,
+                    &mut *tight_streams,
+                );
+
+                #[cfg(feature = "debug-logging")]
+                info!(
+                    "DEBUG: encode_tight_rects returned {} sub-rectangles",
+                    sub_rects.len()
+                );
+
+                #[cfg(feature = "debug-logging")]
+                info!(
+                    "TIGHT: region {}x{} split into {} sub-rectangles",
+                    region.width,
+                    region.height,
+                    sub_rects.len()
+                );
+
+                total_rects += sub_rects.len();
+                tight_encoded_regions.push((region, sub_rects));
+            }
+            drop(tight_streams);
+
+            #[cfg(feature = "debug-logging")]
+            info!("DEBUG: TIGHT pre-encoding complete, total_rects={total_rects}");
+        } else {
+            // Count rectangles for modified regions (accounting for CoRRE tiling)
+            for region in &modified_regions_to_send {
+                if preferred_encoding == ENCODING_CORRE
+                    && (region.width > 255 || region.height > 255)
+                {
+                    // Count how many tiles this region will be split into
+                    let num_tiles_x = region.width.div_ceil(255) as usize;
+                    let num_tiles_y = region.height.div_ceil(255) as usize;
+                    total_rects += num_tiles_x * num_tiles_y;
+                } else {
+                    total_rects += 1;
+                }
             }
         }
 
@@ -907,6 +1015,9 @@ impl VncClient {
         response.put_u8(SERVER_MSG_FRAMEBUFFER_UPDATE);
         response.put_u8(0); // padding
         response.put_u16(total_rects as u16); // number of rectangles
+
+        #[cfg(feature = "debug-logging")]
+        info!("Writing framebuffer update header: total_rects={total_rects}");
 
         #[cfg_attr(
             not(feature = "debug-logging"),
@@ -939,7 +1050,7 @@ impl VncClient {
         // Load quality/compression settings atomically
         let jpeg_quality = self.jpeg_quality.load(Ordering::Relaxed);
         let compression_level = self.compression_level.load(Ordering::Relaxed);
-        let quality_level = self.quality_level.load(Ordering::Relaxed);
+        let _quality_level = self.quality_level.load(Ordering::Relaxed);
 
         // STEP 1: Send copy regions FIRST (standard VNC protocol style)
         if let Some((dx, dy)) = copy_src_offset {
@@ -973,302 +1084,208 @@ impl VncClient {
         }
 
         // STEP 2: Send modified regions (standard VNC protocol: sent AFTER copy regions)
-        for region in &modified_regions_to_send {
-            // For CoRRE encoding: split large rectangles into 255x255 tiles
-            // (CoRRE uses u8 coordinates, so dimensions must be ≤255)
-            if preferred_encoding == ENCODING_CORRE && (region.width > 255 || region.height > 255) {
+
+        #[cfg(feature = "debug-logging")]
+        info!("DEBUG: Starting STEP 2 - Send modified regions");
+
+        // Handle TIGHT encoding separately (already pre-encoded)
+        if preferred_encoding == ENCODING_TIGHT {
+            use crate::protocol::UPDATE_BUF_SIZE;
+
+            #[cfg(feature = "debug-logging")]
+            info!(
+                "DEBUG: In TIGHT output section, tight_encoded_regions.len()={}",
+                tight_encoded_regions.len()
+            );
+
+            #[cfg(feature = "debug-logging")]
+            let mut rect_count = 0;
+
+            for (region, sub_rects) in &tight_encoded_regions {
                 #[cfg(feature = "debug-logging")]
                 info!(
-                    "CoRRE: Splitting {}x{} region into 255x255 tiles",
-                    region.width, region.height
+                    "DEBUG: Processing output region {}x{} with {} sub-rects",
+                    region.width,
+                    region.height,
+                    sub_rects.len()
                 );
-                // Split rectangle into tiles ≤255x255 per RFC 6143 CoRRE specification
-                let mut y = 0;
-                while y < region.height {
-                    let tile_height = std::cmp::min(255, region.height - y);
-                    let mut x = 0;
-                    while x < region.width {
-                        let tile_width = std::cmp::min(255, region.width - x);
+
+                for (rel_x, rel_y, w, h, encoded) in sub_rects {
+                    // Calculate size of this rectangle (header + data)
+                    let rect_size = 12 + encoded.len(); // 12 bytes header + encoded data
+
+                    // Check if adding this rectangle would exceed buffer limit
+                    if response.len() + rect_size > UPDATE_BUF_SIZE {
                         #[cfg(feature = "debug-logging")]
-                        info!(
-                            "CoRRE: Encoding tile at ({},{}) size {}x{}",
-                            region.x + x,
-                            region.y + y,
-                            tile_width,
-                            tile_height
-                        );
+                        info!("DEBUG: Buffer limit reached ({} bytes), flushing to continue streaming", response.len());
 
-                        // Get pixel data for this tile
-                        let tile_pixel_data = match self
-                            .framebuffer
-                            .get_rect(region.x + x, region.y + y, tile_width, tile_height)
-                            .await
-                        {
-                            Ok(data) => data,
-                            Err(e) => {
-                                error!(
-                                    "Failed to get rectangle ({}, {}, {}, {}): {}",
-                                    region.x + x,
-                                    region.y + y,
-                                    tile_width,
-                                    tile_height,
-                                    e
-                                );
-                                x += tile_width;
-                                continue;
-                            }
-                        };
+                        // Send current buffer chunk
+                        let mut send_mutex = self.write_stream.lock().await;
+                        send_mutex.write_all(&response).await?;
+                        drop(send_mutex);
 
-                        // Encode this tile with CoRRE
-                        if let Some(encoder) = encoding::get_encoder(ENCODING_CORRE) {
-                            let encoded = encoder.encode(
-                                &tile_pixel_data,
-                                tile_width,
-                                tile_height,
-                                jpeg_quality,
-                                compression_level,
-                            );
-
-                            // Calculate nSubrects from encoded buffer size
-                            // Encoder returns: bgColor(4) + subrects, each subrect is 8 bytes
-                            let n_subrects = if encoded.len() >= 4 {
-                                (encoded.len() - 4) / 8
-                            } else {
-                                0
-                            };
-
-                            // Write rectangle header for this tile
-                            let rect = Rectangle {
-                                x: region.x + x,
-                                y: region.y + y,
-                                width: tile_width,
-                                height: tile_height,
-                                encoding: ENCODING_CORRE,
-                            };
-                            rect.write_header(&mut response);
-
-                            // Write RRE header (nSubrects in big-endian) - protocol layer responsibility
-                            // CoRRE uses same header structure as RRE per RFC 6143
-                            response.put_u32(n_subrects as u32);
-
-                            // Write encoder output (background color + subrectangle data)
-                            response.extend_from_slice(&encoded);
-
-                            total_pixels += u64::from(tile_width) * u64::from(tile_height);
-                        }
-
-                        x += tile_width;
+                        // Clear buffer and continue streaming rectangles
+                        // Header was already sent in first flush, subsequent flushes are just raw rectangle data
+                        response.clear();
                     }
-                    y += tile_height;
+
+                    // Sub-rectangle coordinates are relative to region origin
+                    // Convert to absolute screen coordinates
+                    let rect = Rectangle {
+                        x: region.x + rel_x,
+                        y: region.y + rel_y,
+                        width: *w,
+                        height: *h,
+                        encoding: ENCODING_TIGHT,
+                    };
+
+                    #[cfg(feature = "debug-logging")]
+                    info!("RECT #{}: {}x{} at ({},{}), TIGHT data={} bytes, response_size_before={}, response_size_after={}",
+                        rect_count, w, h, region.x + rel_x, region.y + rel_y, encoded.len(), response.len(), response.len() + rect_size);
+
+                    rect.write_header(&mut response);
+                    response.extend_from_slice(encoded);
+
+                    total_pixels += u64::from(*w) * u64::from(*h);
+
+                    #[cfg(feature = "debug-logging")]
+                    {
+                        rect_count += 1;
+                    }
                 }
-                continue; // Skip normal encoding path for this region
             }
 
-            // Get pixel data
-            let pixel_data = match self
-                .framebuffer
-                .get_rect(region.x, region.y, region.width, region.height)
-                .await
-            {
-                Ok(data) => data,
-                Err(e) => {
-                    error!(
-                        "Failed to get rectangle ({}, {}, {}, {}): {}",
-                        region.x, region.y, region.width, region.height, e
-                    );
-                    continue; // Skip this invalid rectangle
-                }
-            };
-
-            // Apply pixel format translation and encode
-            // Translation happens before encoding per RFC 6143
-            let client_pixel_format = self.pixel_format.read().await;
-            let server_format = PixelFormat::rgba32();
-
-            let (actual_encoding, encoded) = if preferred_encoding == ENCODING_RAW {
-                // For Raw encoding: translation IS the encoding (like standard VNC protocol)
-                // Just translate and send directly, no additional processing
-                let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                    // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity(
-                        (region.width as usize * region.height as usize) * 4,
-                    );
-                    for chunk in pixel_data.chunks_exact(4) {
-                        buf.put_u8(chunk[0]); // R
-                        buf.put_u8(chunk[1]); // G
-                        buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0); // Padding (not alpha)
-                    }
-                    buf
-                } else {
-                    // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
-                };
-                (ENCODING_RAW, translated)
-            } else if preferred_encoding == ENCODING_ZLIB {
-                // Translate pixels to client format first
-                let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                    // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity(
-                        (region.width as usize * region.height as usize) * 4,
-                    );
-                    for chunk in pixel_data.chunks_exact(4) {
-                        buf.put_u8(chunk[0]); // R
-                        buf.put_u8(chunk[1]); // G
-                        buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0); // Padding (not alpha)
-                    }
-                    buf
-                } else {
-                    // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
-                };
-
-                // Initialize ZLIB compressor lazily on first use
-                let mut zlib_lock = self.zlib_compressor.write().await;
-                if zlib_lock.is_none() {
-                    *zlib_lock = Some(Compress::new(
-                        Compression::new(u32::from(compression_level)),
-                        true,
-                    ));
+            #[cfg(feature = "debug-logging")]
+            info!(
+                "DEBUG: TIGHT output complete, wrote {} rectangle headers, response.len()={}",
+                rect_count,
+                response.len()
+            );
+        } else {
+            // Handle other encodings
+            for region in &modified_regions_to_send {
+                // For CoRRE encoding: split large rectangles into 255x255 tiles
+                // (CoRRE uses u8 coordinates, so dimensions must be ≤255)
+                if preferred_encoding == ENCODING_CORRE
+                    && (region.width > 255 || region.height > 255)
+                {
                     #[cfg(feature = "debug-logging")]
-                    info!("Initialized ZLIB compressor with level {compression_level}");
-                }
-                let zlib_comp = zlib_lock.as_mut().unwrap();
-
-                match encoding::encode_zlib_persistent(&translated, zlib_comp) {
-                    Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
-                    Err(e) => {
-                        error!("ZLIB encoding failed: {e}, falling back to RAW");
-                        #[cfg(feature = "debug-logging")]
-                        {
-                            encoding_name = "RAW";
-                        }
-                        // translated already contains the correctly formatted data
-                        (ENCODING_RAW, translated)
-                    }
-                }
-            } else if preferred_encoding == ENCODING_ZLIBHEX {
-                // Translate pixels to client format first
-                let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                    // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity(
-                        (region.width as usize * region.height as usize) * 4,
+                    info!(
+                        "CoRRE: Splitting {}x{} region into 255x255 tiles",
+                        region.width, region.height
                     );
-                    for chunk in pixel_data.chunks_exact(4) {
-                        buf.put_u8(chunk[0]); // R
-                        buf.put_u8(chunk[1]); // G
-                        buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0); // Padding (not alpha)
+                    // Split rectangle into tiles ≤255x255 per RFC 6143 CoRRE specification
+                    let mut y = 0;
+                    while y < region.height {
+                        let tile_height = std::cmp::min(255, region.height - y);
+                        let mut x = 0;
+                        while x < region.width {
+                            let tile_width = std::cmp::min(255, region.width - x);
+                            #[cfg(feature = "debug-logging")]
+                            info!(
+                                "CoRRE: Encoding tile at ({},{}) size {}x{}",
+                                region.x + x,
+                                region.y + y,
+                                tile_width,
+                                tile_height
+                            );
+
+                            // Get pixel data for this tile
+                            let tile_pixel_data = match self
+                                .framebuffer
+                                .get_rect(region.x + x, region.y + y, tile_width, tile_height)
+                                .await
+                            {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    error!(
+                                        "Failed to get rectangle ({}, {}, {}, {}): {}",
+                                        region.x + x,
+                                        region.y + y,
+                                        tile_width,
+                                        tile_height,
+                                        e
+                                    );
+                                    x += tile_width;
+                                    continue;
+                                }
+                            };
+
+                            // Encode this tile with CoRRE
+                            if let Some(encoder) = encoding::get_encoder(ENCODING_CORRE) {
+                                let encoded = encoder.encode(
+                                    &tile_pixel_data,
+                                    tile_width,
+                                    tile_height,
+                                    jpeg_quality,
+                                    compression_level,
+                                );
+
+                                // Calculate nSubrects from encoded buffer size
+                                // Encoder returns: bgColor(4) + subrects, each subrect is 8 bytes
+                                let n_subrects = if encoded.len() >= 4 {
+                                    (encoded.len() - 4) / 8
+                                } else {
+                                    0
+                                };
+
+                                // Write rectangle header for this tile
+                                let rect = Rectangle {
+                                    x: region.x + x,
+                                    y: region.y + y,
+                                    width: tile_width,
+                                    height: tile_height,
+                                    encoding: ENCODING_CORRE,
+                                };
+                                rect.write_header(&mut response);
+
+                                // Write RRE header (nSubrects in big-endian) - protocol layer responsibility
+                                // CoRRE uses same header structure as RRE per RFC 6143
+                                response.put_u32(n_subrects as u32);
+
+                                // Write encoder output (background color + subrectangle data)
+                                response.extend_from_slice(&encoded);
+
+                                total_pixels += u64::from(tile_width) * u64::from(tile_height);
+                            }
+
+                            x += tile_width;
+                        }
+                        y += tile_height;
                     }
-                    buf
-                } else {
-                    // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
+                    continue; // Skip normal encoding path for this region
+                }
+
+                // Get pixel data
+                let pixel_data = match self
+                    .framebuffer
+                    .get_rect(region.x, region.y, region.width, region.height)
+                    .await
+                {
+                    Ok(data) => data,
+                    Err(e) => {
+                        error!(
+                            "Failed to get rectangle ({}, {}, {}, {}): {}",
+                            region.x, region.y, region.width, region.height, e
+                        );
+                        continue; // Skip this invalid rectangle
+                    }
                 };
 
-                // Initialize ZLIBHEX compressor lazily on first use
-                let mut zlibhex_lock = self.zlibhex_compressor.write().await;
-                if zlibhex_lock.is_none() {
-                    *zlibhex_lock = Some(Compress::new(
-                        Compression::new(u32::from(compression_level)),
-                        true,
-                    ));
-                    #[cfg(feature = "debug-logging")]
-                    info!("Initialized ZLIBHEX compressor with level {compression_level}");
-                }
-                let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
+                // Apply pixel format translation and encode
+                // Translation happens before encoding per RFC 6143
+                let client_pixel_format = self.pixel_format.read().await;
+                let server_format = PixelFormat::rgba32();
 
-                match encoding::encode_zlibhex_persistent(
-                    &translated,
-                    region.width,
-                    region.height,
-                    zlibhex_comp,
-                ) {
-                    Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
-                    Err(e) => {
-                        error!("ZLIBHEX encoding failed: {e}, falling back to RAW");
-                        #[cfg(feature = "debug-logging")]
-                        {
-                            encoding_name = "RAW";
-                        }
-                        // translated already contains the correctly formatted data
-                        (ENCODING_RAW, translated)
-                    }
-                }
-            } else if preferred_encoding == ENCODING_ZRLE {
-                // Translate pixels to client format first
-                let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                    // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity(
-                        (region.width as usize * region.height as usize) * 4,
-                    );
-                    for chunk in pixel_data.chunks_exact(4) {
-                        buf.put_u8(chunk[0]); // R
-                        buf.put_u8(chunk[1]); // G
-                        buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0); // Padding (not alpha)
-                    }
-                    buf
-                } else {
-                    // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
-                };
-
-                // Initialize ZRLE compressor lazily on first use
-                let mut zrle_lock = self.zrle_compressor.write().await;
-                if zrle_lock.is_none() {
-                    *zrle_lock = Some(Compress::new(
-                        Compression::new(u32::from(compression_level)),
-                        true,
-                    ));
-                    #[cfg(feature = "debug-logging")]
-                    info!("Initialized ZRLE compressor with level {compression_level}");
-                }
-                let zrle_comp = zrle_lock.as_mut().unwrap();
-
-                // Use client's pixel format for encoding
-                match encoding::encode_zrle_persistent(
-                    &translated,
-                    region.width,
-                    region.height,
-                    &client_pixel_format,
-                    zrle_comp,
-                ) {
-                    Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
-                    Err(e) => {
-                        error!("ZRLE encoding failed: {e}, falling back to RAW");
-                        #[cfg(feature = "debug-logging")]
-                        {
-                            encoding_name = "RAW";
-                        }
-                        // translated already contains the correctly formatted data
-                        (ENCODING_RAW, translated)
-                    }
-                }
-            } else if preferred_encoding == ENCODING_ZYWRLE {
-                // ZYWRLE: Apply wavelet preprocessing then use ZRLE encoder
-                let level = self.zywrle_level.load(Ordering::Relaxed) as usize;
-
-                // Allocate coefficient buffer for wavelet transform
-                let buf_size = (region.width as usize) * (region.height as usize);
-                let mut coeff_buf = vec![0i32; buf_size];
-
-                // Apply ZYWRLE wavelet preprocessing
-                let result = if let Some(transformed_data) = encoding::zywrle_analyze(
-                    &pixel_data,
-                    region.width as usize,
-                    region.height as usize,
-                    level,
-                    &mut coeff_buf,
-                ) {
-                    // Translate the wavelet-transformed data to client format
+                let (actual_encoding, encoded) = if preferred_encoding == ENCODING_RAW {
+                    // For Raw encoding: translation IS the encoding (like standard VNC protocol)
+                    // Just translate and send directly, no additional processing
                     let translated = if client_pixel_format.is_compatible_with_rgba32() {
                         // Fast path: no translation, but still need to strip alpha
                         let mut buf = BytesMut::with_capacity(
                             (region.width as usize * region.height as usize) * 4,
                         );
-                        for chunk in transformed_data.chunks_exact(4) {
+                        for chunk in pixel_data.chunks_exact(4) {
                             buf.put_u8(chunk[0]); // R
                             buf.put_u8(chunk[1]); // G
                             buf.put_u8(chunk[2]); // B
@@ -1278,13 +1295,135 @@ impl VncClient {
                     } else {
                         // Translate from server format (RGBA32) to client's requested format
                         translate::translate_pixels(
-                            &transformed_data,
+                            &pixel_data,
+                            &server_format,
+                            &client_pixel_format,
+                        )
+                    };
+                    (ENCODING_RAW, translated)
+                } else if preferred_encoding == ENCODING_ZLIB {
+                    // Translate pixels to client format first
+                    let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                        // Fast path: no translation, but still need to strip alpha
+                        let mut buf = BytesMut::with_capacity(
+                            (region.width as usize * region.height as usize) * 4,
+                        );
+                        for chunk in pixel_data.chunks_exact(4) {
+                            buf.put_u8(chunk[0]); // R
+                            buf.put_u8(chunk[1]); // G
+                            buf.put_u8(chunk[2]); // B
+                            buf.put_u8(0); // Padding (not alpha)
+                        }
+                        buf
+                    } else {
+                        // Translate from server format (RGBA32) to client's requested format
+                        translate::translate_pixels(
+                            &pixel_data,
                             &server_format,
                             &client_pixel_format,
                         )
                     };
 
-                    // Now encode the translated data with ZRLE (shares the ZRLE compressor)
+                    // Initialize ZLIB compressor lazily on first use
+                    let mut zlib_lock = self.zlib_compressor.write().await;
+                    if zlib_lock.is_none() {
+                        *zlib_lock = Some(Compress::new(
+                            Compression::new(u32::from(compression_level)),
+                            true,
+                        ));
+                        #[cfg(feature = "debug-logging")]
+                        info!("Initialized ZLIB compressor with level {compression_level}");
+                    }
+                    let zlib_comp = zlib_lock.as_mut().unwrap();
+
+                    match encoding::encode_zlib_persistent(&translated, zlib_comp) {
+                        Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
+                        Err(e) => {
+                            error!("ZLIB encoding failed: {e}, falling back to RAW");
+                            #[cfg(feature = "debug-logging")]
+                            {
+                                encoding_name = "RAW";
+                            }
+                            // translated already contains the correctly formatted data
+                            (ENCODING_RAW, translated)
+                        }
+                    }
+                } else if preferred_encoding == ENCODING_ZLIBHEX {
+                    // Translate pixels to client format first
+                    let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                        // Fast path: no translation, but still need to strip alpha
+                        let mut buf = BytesMut::with_capacity(
+                            (region.width as usize * region.height as usize) * 4,
+                        );
+                        for chunk in pixel_data.chunks_exact(4) {
+                            buf.put_u8(chunk[0]); // R
+                            buf.put_u8(chunk[1]); // G
+                            buf.put_u8(chunk[2]); // B
+                            buf.put_u8(0); // Padding (not alpha)
+                        }
+                        buf
+                    } else {
+                        // Translate from server format (RGBA32) to client's requested format
+                        translate::translate_pixels(
+                            &pixel_data,
+                            &server_format,
+                            &client_pixel_format,
+                        )
+                    };
+
+                    // Initialize ZLIBHEX compressor lazily on first use
+                    let mut zlibhex_lock = self.zlibhex_compressor.write().await;
+                    if zlibhex_lock.is_none() {
+                        *zlibhex_lock = Some(Compress::new(
+                            Compression::new(u32::from(compression_level)),
+                            true,
+                        ));
+                        #[cfg(feature = "debug-logging")]
+                        info!("Initialized ZLIBHEX compressor with level {compression_level}");
+                    }
+                    let zlibhex_comp = zlibhex_lock.as_mut().unwrap();
+
+                    match encoding::encode_zlibhex_persistent(
+                        &translated,
+                        region.width,
+                        region.height,
+                        zlibhex_comp,
+                    ) {
+                        Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
+                        Err(e) => {
+                            error!("ZLIBHEX encoding failed: {e}, falling back to RAW");
+                            #[cfg(feature = "debug-logging")]
+                            {
+                                encoding_name = "RAW";
+                            }
+                            // translated already contains the correctly formatted data
+                            (ENCODING_RAW, translated)
+                        }
+                    }
+                } else if preferred_encoding == ENCODING_ZRLE {
+                    // Translate pixels to client format first
+                    let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                        // Fast path: no translation, but still need to strip alpha
+                        let mut buf = BytesMut::with_capacity(
+                            (region.width as usize * region.height as usize) * 4,
+                        );
+                        for chunk in pixel_data.chunks_exact(4) {
+                            buf.put_u8(chunk[0]); // R
+                            buf.put_u8(chunk[1]); // G
+                            buf.put_u8(chunk[2]); // B
+                            buf.put_u8(0); // Padding (not alpha)
+                        }
+                        buf
+                    } else {
+                        // Translate from server format (RGBA32) to client's requested format
+                        translate::translate_pixels(
+                            &pixel_data,
+                            &server_format,
+                            &client_pixel_format,
+                        )
+                    };
+
+                    // Initialize ZRLE compressor lazily on first use
                     let mut zrle_lock = self.zrle_compressor.write().await;
                     if zrle_lock.is_none() {
                         *zrle_lock = Some(Compress::new(
@@ -1292,9 +1431,7 @@ impl VncClient {
                             true,
                         ));
                         #[cfg(feature = "debug-logging")]
-                        info!(
-                            "Initialized ZRLE compressor for ZYWRLE with level {compression_level}"
-                        );
+                        info!("Initialized ZRLE compressor with level {compression_level}");
                     }
                     let zrle_comp = zrle_lock.as_mut().unwrap();
 
@@ -1306,9 +1443,9 @@ impl VncClient {
                         &client_pixel_format,
                         zrle_comp,
                     ) {
-                        Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
+                        Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
                         Err(e) => {
-                            error!("ZYWRLE encoding failed: {e}, falling back to RAW");
+                            error!("ZRLE encoding failed: {e}, falling back to RAW");
                             #[cfg(feature = "debug-logging")]
                             {
                                 encoding_name = "RAW";
@@ -1317,14 +1454,148 @@ impl VncClient {
                             (ENCODING_RAW, translated)
                         }
                     }
+                } else if preferred_encoding == ENCODING_ZYWRLE {
+                    // ZYWRLE: Apply wavelet preprocessing then use ZRLE encoder
+                    let level = self.zywrle_level.load(Ordering::Relaxed) as usize;
+
+                    // Allocate coefficient buffer for wavelet transform
+                    let buf_size = (region.width as usize) * (region.height as usize);
+                    let mut coeff_buf = vec![0i32; buf_size];
+
+                    // Apply ZYWRLE wavelet preprocessing
+                    let result = if let Some(transformed_data) = encoding::zywrle_analyze(
+                        &pixel_data,
+                        region.width as usize,
+                        region.height as usize,
+                        level,
+                        &mut coeff_buf,
+                    ) {
+                        // Translate the wavelet-transformed data to client format
+                        let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                            // Fast path: no translation, but still need to strip alpha
+                            let mut buf = BytesMut::with_capacity(
+                                (region.width as usize * region.height as usize) * 4,
+                            );
+                            for chunk in transformed_data.chunks_exact(4) {
+                                buf.put_u8(chunk[0]); // R
+                                buf.put_u8(chunk[1]); // G
+                                buf.put_u8(chunk[2]); // B
+                                buf.put_u8(0); // Padding (not alpha)
+                            }
+                            buf
+                        } else {
+                            // Translate from server format (RGBA32) to client's requested format
+                            translate::translate_pixels(
+                                &transformed_data,
+                                &server_format,
+                                &client_pixel_format,
+                            )
+                        };
+
+                        // Now encode the translated data with ZRLE (shares the ZRLE compressor)
+                        let mut zrle_lock = self.zrle_compressor.write().await;
+                        if zrle_lock.is_none() {
+                            *zrle_lock = Some(Compress::new(
+                                Compression::new(u32::from(compression_level)),
+                                true,
+                            ));
+                            #[cfg(feature = "debug-logging")]
+                            info!(
+                            "Initialized ZRLE compressor for ZYWRLE with level {compression_level}"
+                        );
+                        }
+                        let zrle_comp = zrle_lock.as_mut().unwrap();
+
+                        // Use client's pixel format for encoding
+                        match encoding::encode_zrle_persistent(
+                            &translated,
+                            region.width,
+                            region.height,
+                            &client_pixel_format,
+                            zrle_comp,
+                        ) {
+                            Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
+                            Err(e) => {
+                                error!("ZYWRLE encoding failed: {e}, falling back to RAW");
+                                #[cfg(feature = "debug-logging")]
+                                {
+                                    encoding_name = "RAW";
+                                }
+                                // translated already contains the correctly formatted data
+                                (ENCODING_RAW, translated)
+                            }
+                        }
+                    } else {
+                        // Analysis failed (dimensions too small), fall back to RAW with translation
+                        error!(
+                            "ZYWRLE analysis failed (dimensions too small), falling back to RAW"
+                        );
+                        #[cfg(feature = "debug-logging")]
+                        {
+                            encoding_name = "RAW";
+                        }
+                        // Translate original pixel_data for RAW fallback
+                        let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                            let mut buf = BytesMut::with_capacity(
+                                (region.width as usize * region.height as usize) * 4,
+                            );
+                            for chunk in pixel_data.chunks_exact(4) {
+                                buf.put_u8(chunk[0]); // R
+                                buf.put_u8(chunk[1]); // G
+                                buf.put_u8(chunk[2]); // B
+                                buf.put_u8(0); // Padding
+                            }
+                            buf
+                        } else {
+                            translate::translate_pixels(
+                                &pixel_data,
+                                &server_format,
+                                &client_pixel_format,
+                            )
+                        };
+                        (ENCODING_RAW, translated)
+                    };
+                    result
+                } else if let Some(encoder) = encoding::get_encoder(preferred_encoding) {
+                    // For other encodings (TightPng, Hextile): translate first then encode
+                    let translated = if client_pixel_format.is_compatible_with_rgba32() {
+                        // Fast path: no translation, but still need to strip alpha
+                        let mut buf = BytesMut::with_capacity(
+                            (region.width as usize * region.height as usize) * 4,
+                        );
+                        for chunk in pixel_data.chunks_exact(4) {
+                            buf.put_u8(chunk[0]); // R
+                            buf.put_u8(chunk[1]); // G
+                            buf.put_u8(chunk[2]); // B
+                            buf.put_u8(0); // Padding (not alpha)
+                        }
+                        buf
+                    } else {
+                        // Translate from server format (RGBA32) to client's requested format
+                        translate::translate_pixels(
+                            &pixel_data,
+                            &server_format,
+                            &client_pixel_format,
+                        )
+                    };
+                    (
+                        preferred_encoding,
+                        encoder.encode(
+                            &translated,
+                            region.width,
+                            region.height,
+                            jpeg_quality,
+                            compression_level,
+                        ),
+                    )
                 } else {
-                    // Analysis failed (dimensions too small), fall back to RAW with translation
-                    error!("ZYWRLE analysis failed (dimensions too small), falling back to RAW");
+                    // Fallback to RAW encoding if preferred encoding is not available
+                    error!("Encoding {preferred_encoding} not available, falling back to RAW");
                     #[cfg(feature = "debug-logging")]
                     {
-                        encoding_name = "RAW";
+                        encoding_name = "RAW"; // Update encoding name to reflect fallback
                     }
-                    // Translate original pixel_data for RAW fallback
+                    // Translate for RAW fallback
                     let translated = if client_pixel_format.is_compatible_with_rgba32() {
                         let mut buf = BytesMut::with_capacity(
                             (region.width as usize * region.height as usize) * 4,
@@ -1345,94 +1616,40 @@ impl VncClient {
                     };
                     (ENCODING_RAW, translated)
                 };
-                result
-            } else if preferred_encoding == ENCODING_TIGHT {
-                // TIGHT encoding with persistent zlib streams
-                // Get lock on tight_zlib_streams
-                let mut tight_streams = self.tight_zlib_streams.write().await;
 
-                // Use encode_tight_with_streams which uses persistent compression streams
-                // Pass quality_level (0-9 or 255) for Tight encoding, not jpeg_quality
-                let encoded = encoding::tight::encode_tight_with_streams(
-                    &pixel_data,
-                    region.width,
-                    region.height,
-                    quality_level, // Pass VNC quality level for Tight encoding
-                    compression_level,
-                    &mut *tight_streams,
-                );
-
-                (ENCODING_TIGHT, encoded)
-            } else if let Some(encoder) = encoding::get_encoder(preferred_encoding) {
-                // For other encodings (TightPng, Hextile): translate first then encode
-                let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                    // Fast path: no translation, but still need to strip alpha
-                    let mut buf = BytesMut::with_capacity(
-                        (region.width as usize * region.height as usize) * 4,
-                    );
-                    for chunk in pixel_data.chunks_exact(4) {
-                        buf.put_u8(chunk[0]); // R
-                        buf.put_u8(chunk[1]); // G
-                        buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0); // Padding (not alpha)
-                    }
-                    buf
-                } else {
-                    // Translate from server format (RGBA32) to client's requested format
-                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
+                // Write rectangle header with actual encoding used
+                let rect = Rectangle {
+                    x: region.x,
+                    y: region.y,
+                    width: region.width,
+                    height: region.height,
+                    encoding: actual_encoding,
                 };
-                (
-                    preferred_encoding,
-                    encoder.encode(
-                        &translated,
-                        region.width,
-                        region.height,
-                        jpeg_quality,
-                        compression_level,
-                    ),
-                )
-            } else {
-                // Fallback to RAW encoding if preferred encoding is not available
-                error!("Encoding {preferred_encoding} not available, falling back to RAW");
-                #[cfg(feature = "debug-logging")]
-                {
-                    encoding_name = "RAW"; // Update encoding name to reflect fallback
-                }
-                // Translate for RAW fallback
-                let translated = if client_pixel_format.is_compatible_with_rgba32() {
-                    let mut buf = BytesMut::with_capacity(
-                        (region.width as usize * region.height as usize) * 4,
-                    );
-                    for chunk in pixel_data.chunks_exact(4) {
-                        buf.put_u8(chunk[0]); // R
-                        buf.put_u8(chunk[1]); // G
-                        buf.put_u8(chunk[2]); // B
-                        buf.put_u8(0); // Padding
-                    }
-                    buf
-                } else {
-                    translate::translate_pixels(&pixel_data, &server_format, &client_pixel_format)
-                };
-                (ENCODING_RAW, translated)
-            };
+                rect.write_header(&mut response);
+                response.extend_from_slice(&encoded);
 
-            // Write rectangle header with actual encoding used
-            let rect = Rectangle {
-                x: region.x,
-                y: region.y,
-                width: region.width,
-                height: region.height,
-                encoding: actual_encoding,
-            };
-            rect.write_header(&mut response);
-            response.extend_from_slice(&encoded);
-
-            total_pixels += u64::from(region.width) * u64::from(region.height);
+                total_pixels += u64::from(region.width) * u64::from(region.height);
+            }
         }
 
         // Acquire send mutex to prevent interleaved writes
+        #[cfg(feature = "debug-logging")]
+        info!("DEBUG: About to send response, total_rects={}, response.len()={}, copy_rect_count={}, modified_regions={}",
+            total_rects, response.len(), copy_rect_count, modified_regions_to_send.len());
+
         let lock = self.send_mutex.lock().await;
+
+        #[cfg(feature = "debug-logging")]
+        info!(
+            "DEBUG: Acquired send_mutex, calling write_all with {} bytes",
+            response.len()
+        );
+
         self.write_stream.lock().await.write_all(&response).await?;
+
+        #[cfg(feature = "debug-logging")]
+        info!("DEBUG: write_all completed successfully");
+
         drop(lock);
 
         // Reset deferral timer and update last sent time
