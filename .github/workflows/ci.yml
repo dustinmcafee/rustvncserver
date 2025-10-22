@@ -57,6 +57,7 @@ jobs:
       run: |
         vcpkg install libjpeg-turbo:x64-windows
         echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+        echo "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" >> $env:GITHUB_PATH
 
     - name: Run tests
       run: cargo test --verbose --all-features
