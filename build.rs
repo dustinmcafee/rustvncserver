@@ -46,7 +46,22 @@ fn main() {
             println!("cargo:rustc-link-lib=turbojpeg");
         }
         "linux" => {
-            // On Linux, turbojpeg is typically available via system package manager
+            // Skip host library paths when cross-compiling for Android
+            // Android target uses RUSTFLAGS from build.gradle to specify library paths
+            if let Ok(target_env) = env::var("CARGO_CFG_TARGET_ENV") {
+                if target_env == "gnu" {
+                    // Check if building for Android (will have TARGET containing "android")
+                    if let Ok(target) = env::var("TARGET") {
+                        if target.contains("android") {
+                            // For Android, let build.gradle's RUSTFLAGS handle library paths
+                            // Don't add host PC library paths
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // On Linux (non-Android), turbojpeg is typically available via system package manager
             // (libjpeg-turbo8-dev on Ubuntu/Debian)
             // Add common library paths for different architectures
             if let Ok(target_arch) = env::var("CARGO_CFG_TARGET_ARCH") {

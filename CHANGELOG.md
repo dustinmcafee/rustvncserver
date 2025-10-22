@@ -5,6 +5,19 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2025-01-22
+
+### Fixed
+- **Critical TIGHT encoding bug:** Fixed persistent zlib stream implementation causing "Incomplete zlib block" errors
+  - Root cause: `compress_data()` was creating fresh `ZlibEncoder` instances with `finish()` instead of using persistent streams
+  - The control bytes indicated persistent stream IDs (0, 1, 2), but fresh streams created self-contained zlib blocks
+  - This caused client decompressors to fail with "Incomplete zlib block" when expecting continuation data
+  - **Solution:** Removed `stream.reset()` call that was destroying dictionary state
+  - Now properly maintains dictionary state across compressions using `FlushCompress::Sync` (Z_SYNC_FLUSH)
+  - Threaded persistent `TightStreamCompressor` through all encoding functions
+  - Stream IDs correctly implemented per RFC 6143: 0=full-color, 1=mono, 2=indexed
+  - Eliminates decompression errors and connection instability with noVNC and other clients
+
 ## [1.1.2] - 2025-01-21
 
 ### Fixed
