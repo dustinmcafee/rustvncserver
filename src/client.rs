@@ -37,7 +37,9 @@ use bytes::{Buf, BufMut, BytesMut};
 use flate2::Compress;
 use flate2::Compression;
 use flate2::FlushCompress;
-use log::{error, info};
+use log::error;
+#[cfg(feature = "debug-logging")]
+use log::info;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -383,7 +385,7 @@ impl VncClient {
         server_init.write_to(&mut init_buf);
         stream.write_all(&init_buf).await?;
 
-        info!("VNC client handshake completed");
+        log::info!("VNC client handshake completed");
 
         // Split stream into read/write halves for lock-free shutdown
         let (read_stream, write_stream) = stream.into_split();
@@ -545,11 +547,10 @@ impl VncClient {
                                 }
 
                                 // Accept the format and store it for translation during encoding
-                                let compatible = requested_format.is_compatible_with_rgba32();
                                 *self.pixel_format.write().await = requested_format.clone();
 
                                 #[cfg(feature = "debug-logging")]
-                                if compatible {
+                                if requested_format.is_compatible_with_rgba32() {
                                     info!("Client set pixel format: RGBA32 (no translation needed)");
                                 } else {
                                     info!(
@@ -856,7 +857,7 @@ impl VncClient {
             return Ok(());
         }
 
-        let start = Instant::now();
+        let _start = Instant::now();
 
         // Calculate total rectangles including CoRRE tiles
         // For CoRRE encoding, large rectangles are split into 255x255 tiles
@@ -886,7 +887,7 @@ impl VncClient {
         response.put_u8(0); // padding
         response.put_u16(total_rects as u16); // number of rectangles
 
-        let mut encoding_name = match preferred_encoding {
+        let mut _encoding_name = match preferred_encoding {
             ENCODING_TIGHT => "TIGHT",
             ENCODING_TIGHTPNG => "TIGHTPNG",
             ENCODING_ZYWRLE => "ZYWRLE",
@@ -899,8 +900,8 @@ impl VncClient {
             _ => "RAW",
         };
 
-        let mut total_pixels = 0u64;
-        let mut copy_rect_count = 0;
+        let mut _total_pixels = 0u64;
+        let mut _copy_rect_count = 0;
 
         // Load quality/compression settings atomically
         let jpeg_quality = self.jpeg_quality.load(Ordering::Relaxed);
@@ -933,8 +934,8 @@ impl VncClient {
                 response.put_u16(src_x);
                 response.put_u16(src_y);
 
-                total_pixels += u64::from(region.width) * u64::from(region.height);
-                copy_rect_count += 1;
+                _total_pixels += u64::from(region.width) * u64::from(region.height);
+                _copy_rect_count += 1;
             }
         }
 
@@ -1020,7 +1021,7 @@ impl VncClient {
                             // Write encoder output (background color + subrectangle data)
                             response.extend_from_slice(&encoded);
 
-                            total_pixels += u64::from(tile_width) * u64::from(tile_height);
+                            _total_pixels += u64::from(tile_width) * u64::from(tile_height);
                         }
 
                         x += tile_width;
@@ -1106,7 +1107,7 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIB, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIB encoding failed: {e}, falling back to RAW");
-                        encoding_name = "RAW";
+                        _encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1151,7 +1152,7 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZLIBHEX, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZLIBHEX encoding failed: {e}, falling back to RAW");
-                        encoding_name = "RAW";
+                        _encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1198,7 +1199,7 @@ impl VncClient {
                     Ok(data) => (ENCODING_ZRLE, BytesMut::from(&data[..])),
                     Err(e) => {
                         error!("ZRLE encoding failed: {e}, falling back to RAW");
-                        encoding_name = "RAW";
+                        _encoding_name = "RAW";
                         // translated already contains the correctly formatted data
                         (ENCODING_RAW, translated)
                     }
@@ -1266,7 +1267,7 @@ impl VncClient {
                         Ok(data) => (ENCODING_ZYWRLE, BytesMut::from(&data[..])),
                         Err(e) => {
                             error!("ZYWRLE encoding failed: {e}, falling back to RAW");
-                            encoding_name = "RAW";
+                            _encoding_name = "RAW";
                             // translated already contains the correctly formatted data
                             (ENCODING_RAW, translated)
                         }
@@ -1274,7 +1275,7 @@ impl VncClient {
                 } else {
                     // Analysis failed (dimensions too small), fall back to RAW with translation
                     error!("ZYWRLE analysis failed (dimensions too small), falling back to RAW");
-                    encoding_name = "RAW";
+                    _encoding_name = "RAW";
                     // Translate original pixel_data for RAW fallback
                     let translated = if client_pixel_format.is_compatible_with_rgba32() {
                         let mut buf = BytesMut::with_capacity(
@@ -1345,7 +1346,7 @@ impl VncClient {
             } else {
                 // Fallback to RAW encoding if preferred encoding is not available
                 error!("Encoding {preferred_encoding} not available, falling back to RAW");
-                encoding_name = "RAW"; // Update encoding name to reflect fallback
+                _encoding_name = "RAW"; // Update encoding name to reflect fallback
                                        // Translate for RAW fallback
                 let translated = if client_pixel_format.is_compatible_with_rgba32() {
                     let mut buf = BytesMut::with_capacity(
@@ -1375,7 +1376,7 @@ impl VncClient {
             rect.write_header(&mut response);
             response.extend_from_slice(&encoded);
 
-            total_pixels += u64::from(region.width) * u64::from(region.height);
+            _total_pixels += u64::from(region.width) * u64::from(region.height);
         }
 
         // Acquire send mutex to prevent interleaved writes
@@ -1387,12 +1388,14 @@ impl VncClient {
         self.start_deferring_nanos.store(0, Ordering::Relaxed); // Reset deferral
         *self.last_update_sent.write().await = Instant::now();
 
-        let elapsed = start.elapsed();
-                #[cfg(feature = "debug-logging")]
-        info!(
-            "Sent {} rects ({} CopyRect + {} encoded, {} pixels total) using {} ({} bytes, {}ms encode+send)",
-            total_rects, copy_rect_count, modified_regions_to_send.len(), total_pixels, encoding_name, response.len(), elapsed.as_millis()
-        );
+        #[cfg(feature = "debug-logging")]
+        {
+            let elapsed = _start.elapsed();
+            info!(
+                "Sent {} rects ({} CopyRect + {} encoded, {} pixels total) using {} ({} bytes, {}ms encode+send)",
+                total_rects, _copy_rect_count, modified_regions_to_send.len(), _total_pixels, _encoding_name, response.len(), elapsed.as_millis()
+            );
+        }
 
         Ok(())
     }

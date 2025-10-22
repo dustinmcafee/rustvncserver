@@ -33,7 +33,9 @@
 //! This module is typically used through the VNC server's `connect_repeater` method,
 //! which handles the repeater handshake and then establishes a normal VNC client session.
 
-use log::{error, info};
+use log::error;
+#[cfg(feature = "debug-logging")]
+use log::info;
 use std::io;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
