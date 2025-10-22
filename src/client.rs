@@ -383,7 +383,6 @@ impl VncClient {
         server_init.write_to(&mut init_buf);
         stream.write_all(&init_buf).await?;
 
-        #[cfg(feature = "debug-logging")]
         info!("VNC client handshake completed");
 
         // Split stream into read/write halves for lock-free shutdown
