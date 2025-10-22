@@ -667,6 +667,7 @@ impl Rectangle {
     /// * `buf` - The buffer to write the header into.
     pub fn write_header(&self, buf: &mut BytesMut) {
         // VNC protocol requires big-endian (network byte order) for all multi-byte integers
+        #[cfg_attr(not(feature = "debug-logging"), allow(unused_variables))]
         let start_len = buf.len();
         buf.put_u16(self.x);
         buf.put_u16(self.y);
