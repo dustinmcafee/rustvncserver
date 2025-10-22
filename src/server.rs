@@ -172,7 +172,6 @@ impl VncServer {
     #[allow(clippy::cast_possible_truncation)] // Client ID counter limited to u64::MAX, safe on 64-bit platforms
     pub async fn listen(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-        #[cfg(feature = "debug-logging")]
         info!("VNC Server listening on port {port}");
 
         loop {
@@ -353,7 +352,6 @@ impl VncServer {
 
         let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
-        #[cfg(feature = "debug-logging")]
         info!("Client {client_id} disconnected");
         Ok(())
     }
@@ -490,7 +488,6 @@ impl VncServer {
                             // Set connection metadata for client management APIs
                             client.set_connection_metadata(Some(port));
 
-                            #[cfg(feature = "debug-logging")]
                             info!("Reverse connection {client_id} established");
 
                             let client_arc = Arc::new(RwLock::new(client));
@@ -570,7 +567,6 @@ impl VncServer {
                             let _ =
                                 server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
-                            #[cfg(feature = "debug-logging")]
                             info!("Reverse client {client_id} disconnected");
                         }
                         Err(e) => {
@@ -673,7 +669,6 @@ impl VncServer {
 
             match connection_result {
                 Ok(client) => {
-                    #[cfg(feature = "debug-logging")]
                     info!("Repeater connection {client_id} established");
 
                     let client_arc = Arc::new(RwLock::new(client));
@@ -750,7 +745,6 @@ impl VncServer {
 
                     let _ = server_event_tx.send(ServerEvent::ClientDisconnected { client_id });
 
-                    #[cfg(feature = "debug-logging")]
                     info!("Repeater client {client_id} disconnected");
                 }
                 Err(e) => {
