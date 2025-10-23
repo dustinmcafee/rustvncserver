@@ -5,6 +5,34 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.1] - 2025-10-23
+
+### Changed
+
+- **Major architectural refactoring:** Extracted all encoding implementations to separate `rfb-encodings` crate
+  - All encoding modules (Raw, RRE, CoRRE, Hextile, Zlib, Tight, TightPng, ZlibHex, ZRLE, ZYWRLE) moved to `rfb-encodings`
+  - Pixel format translation moved to `rfb-encodings`
+  - `PixelFormat` struct now re-exported from `rfb-encodings`
+  - Benefits:
+    - Encoding implementations now reusable across VNC servers, clients, proxies, and recorders
+    - Cleaner separation of concerns: protocol vs encoding
+    - Independent versioning and publishing of encodings
+    - Better visibility and discoverability on crates.io
+  - **Fully backwards compatible:** All public APIs preserved through re-exports
+  - Existing code using `rustvncserver::encoding::*` or `rustvncserver::PixelFormat` continues to work
+
+### Added
+
+- New dependency: `rfb-encodings` crate (0.1.2) for all encoding implementations
+- Re-exported all encoding types from `rfb-encodings` for full backwards compatibility
+- `pub use rfb_encodings as encoding;` allows seamless access to all encodings
+
+### Fixed
+
+- All fixes from rfb-encodings 0.1.1 and 0.1.2 inherited:
+  - macOS CI Build: Fixed turbojpeg linking errors
+  - Compiler warnings for conditional compilation suppressed
+
 ## [1.1.5] - 2025-10-23
 
 ### Fixed

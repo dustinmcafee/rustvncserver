@@ -1,6 +1,6 @@
 [package]
 name = "rustvncserver"
-version = "1.1.5"
+version = "2.0.0-beta.1"
 edition = "2021"
 rust-version = "1.90"
 authors = ["Dustin McAfee"]
@@ -17,17 +17,17 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
 bytes = "1"
-flate2 = "1.0"          # Zlib compression
-png = "0.17"            # PNG encoding for TightPng
 log = "0.4"
 thiserror = "1.0"       # Error handling
 des = "0.8"             # DES encryption for VNC auth
 rand = "0.8"            # Random number generation for auth
+flate2 = "1.0"          # Zlib compression for Tight encoding
+rfb-encodings = "0.1"   # RFB encoding implementations
 
 [features]
 default = []
-turbojpeg = []          # Enable TurboJPEG for better JPEG performance (requires libjpeg-turbo)
-debug-logging = []      # Enable verbose debug logging (shows client IPs, connection details)
+turbojpeg = ["rfb-encodings/turbojpeg"]   # Enable TurboJPEG for better JPEG performance (requires libjpeg-turbo)
+debug-logging = ["rfb-encodings/debug-logging"]  # Enable verbose debug logging (shows client IPs, connection details)
 
 [dev-dependencies]
 tokio-test = "0.4"
