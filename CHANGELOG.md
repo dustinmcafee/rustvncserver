@@ -5,6 +5,15 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.3] - 2025-10-23
+
+### Changed
+
+- Updated `rfb-encodings` dependency from `0.1` to `0.1.3`
+  - Fixes critical build failure when using `turbojpeg` feature without `debug-logging`
+  - Resolves "use of unresolved module or unlinked crate log" compilation errors
+  - All turbojpeg builds now work correctly
+
 ## [2.0.0-beta.2] - 2025-10-23
 
 ### Fixed
