@@ -279,7 +279,6 @@ pub const SECURITY_RESULT_OK: u32 = 0;
 /// Sent by the server to indicate that authentication failed.
 pub const SECURITY_RESULT_FAILED: u32 = 1;
 
-
 /// Represents the `ServerInit` message sent during VNC initialization.
 ///
 /// This message is sent by the server after security negotiation is complete.
