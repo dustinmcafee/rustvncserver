@@ -5,6 +5,17 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2025-10-23
+
+### Fixed
+- **Critical RRE encoding bug:** Fixed data loss causing severe visual corruption and flickering
+  - Root cause: Encoder had an "efficiency check" that would return 0 subrectangles when RRE encoding was larger than raw
+  - This told VNC clients to paint the entire rectangle with only the background color, discarding all other pixel data
+  - For video content or complex images with many colors, this resulted in constant flickering as frames alternated between partial data (background color only) and complete data
+  - **Solution:** Always encode all pixels as subrectangles, even if RRE is inefficient
+  - Ensures correct visual output at all times; protocol layer can choose different encoding if efficiency is a concern
+  - Eliminates flickering and visual artifacts when using RRE encoding
+
 ## [1.1.3] - 2025-01-22
 
 ### Fixed

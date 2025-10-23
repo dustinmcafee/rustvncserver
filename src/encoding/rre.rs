@@ -47,17 +47,9 @@ impl Encoding for RreEncoding {
         // Find all subrectangles
         let subrects = find_subrects(&pixels, width as usize, height as usize, bg_color);
 
-        // Check if RRE is worth it (otherwise would be larger than raw)
+        // Always encode all pixels to avoid data loss
+        // (Even if RRE is inefficient, we must preserve the image correctly)
         let encoded_size = 4 + 4 + (subrects.len() * (4 + 8)); // header + bg + subrects
-        let raw_size = width as usize * height as usize * 4; // 4 bytes per pixel for 32bpp
-
-        if encoded_size >= raw_size {
-            // Fall back to raw encoding within RRE format (0 subrects)
-            let mut buf = BytesMut::with_capacity(4 + 4);
-            buf.put_u32(0); // 0 subrects (big-endian)
-            buf.put_u32_le(bg_color); // background color in client format (little-endian)
-            return buf;
-        }
 
         let mut buf = BytesMut::with_capacity(encoded_size);
 
