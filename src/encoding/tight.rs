@@ -1016,6 +1016,7 @@ fn encode_solid_rect(color: u32, client_format: &PixelFormat) -> BytesMut {
             && client_format.red_max == 255
             && client_format.green_max == 255
             && client_format.blue_max == 255;
+        #[cfg(feature = "debug-logging")]
         info!("Tight solid: color=0x{:06x}, translated bytes={:02x?}, use_24bit={}, client: depth={} bpp={} rshift={} gshift={} bshift={}",
             color, color_bytes, use_24bit, client_format.depth, client_format.bits_per_pixel,
             client_format.red_shift, client_format.green_shift, client_format.blue_shift);
@@ -1023,6 +1024,7 @@ fn encode_solid_rect(color: u32, client_format: &PixelFormat) -> BytesMut {
 
     buf.extend_from_slice(&color_bytes);
 
+    #[cfg(feature = "debug-logging")]
     info!(
         "Tight solid: 0x{:06x}, control=0x{:02x}, color_len={}, total={} bytes",
         color,
@@ -1278,6 +1280,7 @@ fn encode_jpeg_rect<C: TightStreamCompressor>(
         write_compact_length(&mut buf, jpeg_data.len());
         buf.put_slice(&jpeg_data);
 
+        #[cfg(feature = "debug-logging")]
         info!(
             "Tight JPEG: {}x{}, quality {}, {} bytes",
             width,
