@@ -1,6 +1,6 @@
 [package]
 name = "rustvncserver"
-version = "2.0.0-beta.2"
+version = "2.0.0-beta.3"
 edition = "2021"
 rust-version = "1.90"
 authors = ["Dustin McAfee"]
@@ -22,7 +22,7 @@ thiserror = "1.0"       # Error handling
 des = "0.8"             # DES encryption for VNC auth
 rand = "0.8"            # Random number generation for auth
 flate2 = "1.0"          # Zlib compression for Tight encoding
-rfb-encodings = "0.1"   # RFB encoding implementations
+rfb-encodings = "0.1.3"   # RFB encoding implementations
 
 [features]
 default = []
