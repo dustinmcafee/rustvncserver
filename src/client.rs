@@ -62,7 +62,7 @@ use crate::protocol::{
     PROTOCOL_VERSION, SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, SECURITY_TYPE_NONE,
     SECURITY_TYPE_VNC_AUTH, SERVER_MSG_FRAMEBUFFER_UPDATE, SERVER_MSG_SERVER_CUT_TEXT,
 };
-use crate::translate;
+use rfb_encodings::translate;
 
 /// Represents various events that a VNC client can send to the server.
 /// These events typically correspond to user interactions like keyboard input,
