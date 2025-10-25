@@ -120,10 +120,11 @@ pub mod server;
 // Internal modules
 mod auth;
 mod client;
-pub mod encoding;
 pub mod jpeg;
 mod repeater;
-mod translate;
+
+// Re-export encodings from rfb-encodings crate
+pub use rfb_encodings as encoding;
 
 // Re-exports
 pub use encoding::Encoding;

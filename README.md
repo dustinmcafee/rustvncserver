@@ -58,6 +58,8 @@ A pure Rust VNC (Virtual Network Computing) server library with complete RFB pro
 
 ### Supported Encodings
 
+All encoding implementations are provided by the separate [**rfb-encodings**](https://github.com/dustinmcafee/rfb-encodings) library, which can be reused across VNC servers and recording/proxy tools that need to encode framebuffer data.
+
 | Encoding | ID | Description | Wire Format Match | Testing Status |
 |----------|----|----|-------------------|----------------|
 | **Raw** | 0 | Uncompressed pixels | ✅ 100% | ✅ Tested |
@@ -96,7 +98,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustvncserver = "1.1"
+rustvncserver = "2.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -104,7 +106,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ```toml
 [dependencies]
-rustvncserver = { version = "1.1", features = ["turbojpeg"] }
+rustvncserver = { version = "2.0", features = ["turbojpeg"] }
 ```
 
 **Features:**
@@ -359,6 +361,7 @@ All Rust dependencies use MIT or dual MIT/Apache-2.0 licenses.
 
 - **Author**: Dustin McAfee
 - **Protocol**: Implements RFC 6143 (RFB Protocol Specification)
+- **Encodings**: [rfb-encodings](https://github.com/dustinmcafee/rfb-encodings) - Reusable RFB encoding library
 - **Used in**: [RustVNC](https://github.com/dustinmcafee/RustVNC) - VNC server for Android
 
 ## See Also

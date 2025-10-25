@@ -40,6 +40,13 @@ We welcome feature suggestions! Please create an issue with:
 - Rust 1.90 or later
 - `libjpeg-turbo` (optional, for turbojpeg feature)
 
+### Architecture
+
+rustvncserver uses the separate [rfb-encodings](https://github.com/dustinmcafee/rfb-encodings) library for all encoding implementations. This modular design allows:
+- Encoding code to be reused across VNC servers, proxies, and recording tools
+- Independent versioning and publishing of encoding implementations
+- Better separation of concerns (protocol vs encoding)
+
 ### Building
 
 ```bash
@@ -139,11 +146,15 @@ cargo test --all-features
 
 If you're adding a new VNC encoding:
 
-1. Create a new file in `src/encoding/`
-2. Implement the encoding following RFC 6143 specification
-3. Add comprehensive tests
-4. Update README.md with the new encoding
-5. Add example demonstrating the encoding
+1. Contribute to the [rfb-encodings](https://github.com/dustinmcafee/rfb-encodings) library instead
+2. Create a new file in the rfb-encodings `src/` directory
+3. Implement the encoding following RFC 6143 specification
+4. Add comprehensive tests
+5. Update the rfb-encodings README.md with the new encoding
+6. Update rustvncserver to use the new encoding from rfb-encodings
+7. Add example demonstrating the encoding in rustvncserver
+
+**Note:** All encoding implementations are now maintained in the separate rfb-encodings crate for reusability across VNC servers and other tools.
 
 ## Performance Considerations
 
