@@ -22,11 +22,13 @@ Complete technical documentation for the rustvncserver library and RFC 6143 prot
 
 rustvncserver is a pure Rust VNC (Virtual Network Computing) server library with full RFC 6143 protocol compliance.
 
+All encoding implementations are provided by the separate [**rfb-encodings**](https://github.com/dustinmcafee/rfb-encodings) library, which provides reusable RFB encoding modules for VNC servers and other tools that need to encode framebuffer data.
+
 ### Key Features
 
 **Protocol Compliance:**
 - ✅ RFC 6143 (RFB Protocol 3.8) fully compliant
-- ✅ 11 encoding types implemented
+- ✅ 11 encoding types implemented (via rfb-encodings library)
 - ✅ All standard pixel formats (8/16/24/32-bit)
 - ✅ Quality and compression level pseudo-encodings
 - ✅ Reverse connections and repeater support
@@ -36,6 +38,7 @@ rustvncserver is a pure Rust VNC (Virtual Network Computing) server library with
 - **Thread Safety**: No data races, safe concurrent client handling
 - **Modern Async I/O**: Built on Tokio runtime for efficient connection handling
 - **Better Performance**: Zero-copy framebuffer updates via Arc-based sharing
+- **Modular Design**: Encoding implementations separated into reusable rfb-encodings crate
 
 ### Architecture
 
@@ -50,9 +53,16 @@ rustvncserver is a pure Rust VNC (Virtual Network Computing) server library with
 │  └──────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────┐  │
 │  │  VncClient (per-client connection)       │  │
-│  │    • Pixel format translation            │  │
 │  │    • Encoding selection                  │  │
 │  │    • Compression streams                 │  │
+│  └──────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────┘
+                         │
+                         ▼ uses
+┌─────────────────────────────────────────────────┐
+│         rfb-encodings Library                   │
+│  ┌──────────────────────────────────────────┐  │
+│  │  Pixel format translation                │  │
 │  └──────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────┐  │
 │  │  Encodings (11 types)                    │  │
@@ -686,15 +696,16 @@ The library depends on the following crates (from `Cargo.toml`):
 
 ```toml
 [dependencies]
+rfb-encodings = "0.1"    # RFB encoding implementations
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
 bytes = "1"
-flate2 = "1.0"           # Zlib compression
-png = "0.17"             # PNG encoding for TightPng
 log = "0.4"
 thiserror = "1.0"        # Error handling
 des = "0.8"              # DES encryption for VNC auth
 rand = "0.8"             # Random number generation
 ```
+
+**Note:** All encoding-related dependencies (flate2, png, libjpeg-turbo, etc.) are now managed by the rfb-encodings crate.
 
 ### Optional Features
 
@@ -708,9 +719,16 @@ The library can be integrated into any Rust project by adding to `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustvncserver = "1.0"
+rustvncserver = "2.0"
 # Or from a git repository:
 # rustvncserver = { git = "https://github.com/dustinmcafee/rustvncserver" }
+```
+
+The rfb-encodings library is included automatically as a dependency. If you need to use encoding functions directly, you can also add:
+
+```toml
+[dependencies]
+rfb-encodings = "0.1"
 ```
 
 ---
