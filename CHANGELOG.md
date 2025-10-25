@@ -5,6 +5,16 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.4] - 2025-10-25
+
+### Changed
+
+- Updated all documentation (README.md, TECHNICAL.md, CONTRIBUTING.md) to properly credit the `rfb-encodings` library
+  - Added clear references to [rfb-encodings](https://github.com/dustinmcafee/rfb-encodings) throughout documentation
+  - Updated architecture diagrams to show the separation between rustvncserver and rfb-encodings
+  - Clarified that rfb-encodings provides encoding implementations (for servers), not decoding (for clients)
+  - Updated version examples in documentation to use version 2.0
+
 ## [2.0.0-beta.3] - 2025-10-23
 
 ### Changed
