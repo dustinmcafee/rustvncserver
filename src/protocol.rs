@@ -31,6 +31,18 @@ use bytes::{BufMut, BytesMut};
 // Re-export PixelFormat from rfb-encodings
 pub use rfb_encodings::PixelFormat;
 
+// Re-export encoding constants from rfb-encodings
+pub use rfb_encodings::{
+    // Encoding types
+    ENCODING_CORRE, ENCODING_HEXTILE, ENCODING_RAW, ENCODING_RRE, ENCODING_TIGHT,
+    ENCODING_TIGHTPNG, ENCODING_ZLIB, ENCODING_ZLIBHEX, ENCODING_ZRLE, ENCODING_ZYWRLE,
+    // Hextile subencoding flags
+    HEXTILE_ANY_SUBRECTS, HEXTILE_BACKGROUND_SPECIFIED, HEXTILE_FOREGROUND_SPECIFIED,
+    HEXTILE_RAW, HEXTILE_SUBRECTS_COLOURED,
+    // Tight subencoding types
+    TIGHT_PNG,
+};
+
 /// The RFB protocol version string advertised by the server.
 ///
 /// This server implements RFB protocol version 3.8, which is widely supported
@@ -109,75 +121,23 @@ pub const SERVER_MSG_BELL: u8 = 2;
 pub const SERVER_MSG_SERVER_CUT_TEXT: u8 = 3;
 
 // Encoding Types
-
-/// Encoding type: Raw pixel data.
-///
-/// The simplest encoding that sends uncompressed pixel data directly.
-/// High bandwidth but universally supported.
-pub const ENCODING_RAW: i32 = 0;
+//
+// Note: Most encoding type constants are re-exported from rfb-encodings at the top of this file.
+// Only server-specific encodings and pseudo-encodings are defined here.
 
 /// Encoding type: Copy Rectangle.
 ///
 /// Instructs the client to copy a rectangular region from one location
 /// to another on the screen. Highly efficient for scrolling operations.
+/// This is a server-side operation, not a data encoding format.
 pub const ENCODING_COPYRECT: i32 = 1;
-
-/// Encoding type: Rise-and-Run-length Encoding.
-///
-/// A simple compression scheme for rectangular regions.
-pub const ENCODING_RRE: i32 = 2;
-
-/// Encoding type: Compact RRE.
-///
-/// A more compact version of RRE encoding.
-pub const ENCODING_CORRE: i32 = 4;
-
-/// Encoding type: Hextile.
-///
-/// Divides rectangles into 16x16 tiles for efficient encoding.
-pub const ENCODING_HEXTILE: i32 = 5;
-
-/// Encoding type: Zlib compressed.
-///
-/// Uses zlib compression on raw pixel data.
-pub const ENCODING_ZLIB: i32 = 6;
-
-/// Encoding type: Tight.
-///
-/// A highly efficient encoding using JPEG compression for gradient content
-/// and other compression methods for different types of screen content.
-pub const ENCODING_TIGHT: i32 = 7;
-
-/// Encoding type: `TightPng`.
-///
-/// Like Tight encoding but uses PNG compression instead of JPEG.
-/// Provides lossless compression for high-quality image transmission.
-pub const ENCODING_TIGHTPNG: i32 = -260;
-
-/// Encoding type: `ZlibHex`.
-///
-/// Zlib-compressed Hextile encoding. Combines Hextile's tile-based encoding
-/// with zlib compression for improved bandwidth efficiency.
-pub const ENCODING_ZLIBHEX: i32 = 8;
 
 /// Encoding type: Tile Run-Length Encoding.
 ///
 /// An efficient encoding for palettized and run-length compressed data.
+/// Note: Not currently implemented in rfb-encodings.
 #[allow(dead_code)]
 pub const ENCODING_TRLE: i32 = 15;
-
-/// Encoding type: Zlib compressed TRLE.
-///
-/// Combines TRLE with zlib compression.
-pub const ENCODING_ZRLE: i32 = 16;
-
-/// Encoding type: ZYWRLE (Zlib+Wavelet+Run-Length Encoding).
-///
-/// Wavelet-based lossy compression for low-bandwidth scenarios.
-/// Uses Piecewise-Linear Haar wavelet transform, RCT (Reversible Color Transform)
-/// for RGB to YUV conversion, and non-linear quantization filtering.
-/// Shares the ZRLE encoder but applies wavelet preprocessing first.
-pub const ENCODING_ZYWRLE: i32 = 17;
 
 /// Encoding type: H.264 video encoding.
 ///
@@ -224,27 +184,8 @@ pub const ENCODING_COMPRESS_LEVEL_0: i32 = -256;
 /// for reduced bandwidth usage.
 pub const ENCODING_COMPRESS_LEVEL_9: i32 = -247;
 
-// Hextile subencoding flags
-
-/// Hextile: Raw pixel data for this tile.
-pub const HEXTILE_RAW: u8 = 1 << 0;
-
-/// Hextile: Background color is specified.
-pub const HEXTILE_BACKGROUND_SPECIFIED: u8 = 1 << 1;
-
-/// Hextile: Foreground color is specified.
-pub const HEXTILE_FOREGROUND_SPECIFIED: u8 = 1 << 2;
-
-/// Hextile: Tile contains subrectangles.
-pub const HEXTILE_ANY_SUBRECTS: u8 = 1 << 3;
-
-/// Hextile: Subrectangles are colored (not monochrome).
-pub const HEXTILE_SUBRECTS_COLOURED: u8 = 1 << 4;
-
-// Tight subencoding types
-
-/// Tight/TightPng: PNG compression subencoding.
-pub const TIGHT_PNG: u8 = 0x0A;
+// Note: Hextile and Tight subencoding constants are re-exported from rfb-encodings
+// at the top of this file.
 
 // Security Types
 

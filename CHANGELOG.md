@@ -5,6 +5,36 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.5] - 2025-10-27
+
+### Changed
+
+- **Code Deduplication**: Removed duplicate code to improve maintainability
+  - Updated `rfb-encodings` dependency from `0.1.3` to `0.1.5`
+  - Removed duplicate encoding type constants from `protocol.rs` (now imported from `rfb-encodings`)
+  - Removed duplicate Hextile and Tight subencoding constants (now imported from `rfb-encodings`)
+  - Deleted duplicate `src/jpeg/` module (now using TurboJPEG from `rfb-encodings`)
+  - Encoding constants now have single source of truth in `rfb-encodings` library
+  - Server-specific constants (COPYRECT, pseudo-encodings, protocol messages) remain in `protocol.rs`
+  - Code reduction: ~220 lines of duplicate code eliminated
+
+- **Documentation**: Comprehensive TurboJPEG setup and licensing information
+  - Added TurboJPEG installation instructions for Ubuntu/Debian, macOS, and Windows in README
+  - Added "TurboJPEG Setup" section with platform-specific installation commands
+  - Updated License section to document optional third-party dependencies
+  - Updated NOTICE file with complete libjpeg-turbo attribution including:
+    - BSD-3-Clause license for TurboJPEG API
+    - IJG License for libjpeg code
+    - zlib License for SIMD extensions
+    - Copyright notices for all contributors
+  - Clarified that libjpeg-turbo is NOT distributed and users are responsible for license compliance
+
+### Improved
+
+- Simplified API surface by consolidating constant definitions
+- Better separation of concerns: encoding library handles encoding constants, server handles protocol constants
+- Reduced maintenance burden by eliminating duplicate code across projects
+
 ## [2.0.0-beta.4] - 2025-10-25
 
 ### Changed
