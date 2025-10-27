@@ -113,6 +113,23 @@ rustvncserver = { version = "2.0", features = ["turbojpeg"] }
 - `turbojpeg` - Enable TurboJPEG for hardware-accelerated JPEG compression (requires libjpeg-turbo)
 - `debug-logging` - Enable verbose debug logging (shows client IPs, connection details, encoding statistics)
 
+### TurboJPEG Setup
+
+The `turbojpeg` feature requires libjpeg-turbo to be installed on your system:
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install libturbojpeg0-dev
+```
+
+**macOS:**
+```bash
+brew install jpeg-turbo
+```
+
+**Windows:**
+Download from [libjpeg-turbo.org](https://libjpeg-turbo.org/)
+
 ## Quick Start
 
 ```rust
@@ -356,6 +373,10 @@ Apache-2.0 - See [LICENSE](LICENSE) file for details.
 This library implements the VNC protocol as specified in RFC 6143, which is a public specification.
 The ZYWRLE algorithm is used under a BSD-style license from Hitachi Systems & Services, Ltd.
 All Rust dependencies use MIT or dual MIT/Apache-2.0 licenses.
+
+### Optional Third-Party Dependencies
+
+When using the `turbojpeg` feature, this library provides bindings to libjpeg-turbo (licensed under BSD-3-Clause, IJG, and zlib licenses). Users are responsible for compliance with libjpeg-turbo's license terms. See [NOTICE](NOTICE) for details.
 
 ## Credits
 

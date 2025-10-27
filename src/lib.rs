@@ -120,7 +120,6 @@ pub mod server;
 // Internal modules
 mod auth;
 mod client;
-pub mod jpeg;
 mod repeater;
 
 // Re-export encodings from rfb-encodings crate
@@ -135,7 +134,7 @@ pub use protocol::PixelFormat;
 pub use server::VncServer;
 
 #[cfg(feature = "turbojpeg")]
-pub use jpeg::TurboJpegEncoder;
+pub use encoding::jpeg::TurboJpegEncoder;
 
 /// VNC protocol version.
 pub const PROTOCOL_VERSION: &str = "RFB 003.008\n";

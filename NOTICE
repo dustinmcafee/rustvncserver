@@ -25,6 +25,28 @@ non-commercial applications.
 
 ================================================================================
 
+TurboJPEG / libjpeg-turbo (Optional):
+
+When compiled with the 'turbojpeg' feature flag, this software provides FFI
+bindings to libjpeg-turbo, which must be installed separately by the end user.
+
+libjpeg-turbo is licensed under a BSD-style license with multiple components:
+- libjpeg-turbo API: BSD 3-Clause License
+- libjpeg code: Independent JPEG Group (IJG) License
+- SIMD extensions: zlib License
+
+Copyright (C) 2009-2024 D. R. Commander
+Copyright (C) 2015, 2020 Google, Inc.
+Portions Copyright (C) 1991-2020 Thomas G. Lane, Guido Vollbeding
+
+libjpeg-turbo is NOT distributed with this software. Users must install it
+separately and are responsible for compliance with its license terms.
+
+For full license text, see:
+https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/LICENSE.md
+
+================================================================================
+
 This software depends on the following third-party Rust crates:
 
 - tokio (MIT License)
