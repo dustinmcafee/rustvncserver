@@ -5,6 +5,91 @@ All notable changes to rustvncserver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2025-10-27
+
+**Stable Release** - This marks the official 2.0.0 release, graduating from beta status.
+
+### Changed
+
+- **Code Deduplication**: Removed duplicate code to improve maintainability
+  - Updated `rfb-encodings` dependency from `0.1.3` to `0.1.5`
+  - Removed duplicate encoding type constants from `protocol.rs` (now imported from `rfb-encodings`)
+  - Removed duplicate Hextile and Tight subencoding constants (now imported from `rfb-encodings`)
+  - Deleted duplicate `src/jpeg/` module (now using TurboJPEG from `rfb-encodings`)
+  - Encoding constants now have single source of truth in `rfb-encodings` library
+  - Server-specific constants (COPYRECT, pseudo-encodings, protocol messages) remain in `protocol.rs`
+  - Code reduction: ~220 lines of duplicate code eliminated
+
+- **Documentation**: Comprehensive TurboJPEG setup and licensing information
+  - Added TurboJPEG installation instructions for Ubuntu/Debian, macOS, and Windows in README
+  - Added "TurboJPEG Setup" section with platform-specific installation commands
+  - Updated License section to document optional third-party dependencies
+  - Updated NOTICE file with complete libjpeg-turbo attribution including:
+    - BSD-3-Clause license for TurboJPEG API
+    - IJG License for libjpeg code
+    - zlib License for SIMD extensions
+    - Copyright notices for all contributors
+  - Clarified that libjpeg-turbo is NOT distributed and users are responsible for license compliance
+
+### Improved
+
+- Simplified API surface by consolidating constant definitions
+- Better separation of concerns: encoding library handles encoding constants, server handles protocol constants
+- Reduced maintenance burden by eliminating duplicate code across projects
+
+## [2.0.0-beta.4] - 2025-10-25
+
+### Changed
+
+- Updated all documentation (README.md, TECHNICAL.md, CONTRIBUTING.md) to properly credit the `rfb-encodings` library
+  - Added clear references to [rfb-encodings](https://github.com/dustinmcafee/rfb-encodings) throughout documentation
+  - Updated architecture diagrams to show the separation between rustvncserver and rfb-encodings
+  - Clarified that rfb-encodings provides encoding implementations (for servers), not decoding (for clients)
+  - Updated version examples in documentation to use version 2.0
+
+## [2.0.0-beta.3] - 2025-10-23
+
+### Changed
+
+- Updated `rfb-encodings` dependency from `0.1` to `0.1.3`
+  - Fixes critical build failure when using `turbojpeg` feature without `debug-logging`
+  - Resolves "use of unresolved module or unlinked crate log" compilation errors
+  - All turbojpeg builds now work correctly
+
+## [2.0.0-beta.2] - 2025-10-23
+
+### Fixed
+
+- Code formatting: Removed extra blank line in `protocol.rs`
+
+## [2.0.0-beta.1] - 2025-10-23
+
+### Changed
+
+- **Major architectural refactoring:** Extracted all encoding implementations to separate `rfb-encodings` crate
+  - All encoding modules (Raw, RRE, CoRRE, Hextile, Zlib, Tight, TightPng, ZlibHex, ZRLE, ZYWRLE) moved to `rfb-encodings`
+  - Pixel format translation moved to `rfb-encodings`
+  - `PixelFormat` struct now re-exported from `rfb-encodings`
+  - Benefits:
+    - Encoding implementations now reusable across VNC servers, clients, proxies, and recorders
+    - Cleaner separation of concerns: protocol vs encoding
+    - Independent versioning and publishing of encodings
+    - Better visibility and discoverability on crates.io
+  - **Fully backwards compatible:** All public APIs preserved through re-exports
+  - Existing code using `rustvncserver::encoding::*` or `rustvncserver::PixelFormat` continues to work
+
+### Added
+
+- New dependency: `rfb-encodings` crate (0.1.2) for all encoding implementations
+- Re-exported all encoding types from `rfb-encodings` for full backwards compatibility
+- `pub use rfb_encodings as encoding;` allows seamless access to all encodings
+
+### Fixed
+
+- All fixes from rfb-encodings 0.1.1 and 0.1.2 inherited:
+  - macOS CI Build: Fixed turbojpeg linking errors
+  - Compiler warnings for conditional compilation suppressed
+
 ## [1.1.5] - 2025-10-23
 
 ### Fixed
