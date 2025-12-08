@@ -43,8 +43,7 @@ use log::info;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
@@ -211,10 +210,10 @@ impl TightStreamCompressor for TightZlibStreams {
 /// processing incoming client messages (e.g., key events, pointer events, pixel format requests),
 /// and managing client-specific settings like preferred encodings and JPEG quality.
 pub struct VncClient {
-    /// The read half of the TCP stream for receiving client messages.
-    read_stream: tokio::net::tcp::OwnedReadHalf,
-    /// The write half of the TCP stream for sending updates to the client.
-    write_stream: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    /// The read half of the stream for receiving client messages.
+    read_stream: Box<dyn AsyncRead + Unpin + Send + Sync>,
+    /// The write half of the stream for sending updates to the client.
+    write_stream: Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Unpin + Send + Sync>>>,
     /// A reference to the framebuffer, used to retrieve pixel data for updates.
     framebuffer: Framebuffer,
     /// The pixel format requested by the client, protected by a `RwLock` for concurrent access.
@@ -275,8 +274,8 @@ pub struct VncClient {
     /// Persistent zlib compression streams for Tight encoding (4 streams with dictionaries).
     /// Protected by `RwLock` since encoding happens during `send_batched_update`.
     tight_zlib_streams: RwLock<TightZlibStreams>,
-    /// Remote host address (IP:port) of the connected client
-    remote_host: String,
+    /// Remote host address (IP:port) of the connected client (None for generic streams)
+    remote_host: Option<String>,
     /// Destination port for repeater connections (None for direct connections)
     destination_port: Option<u16>,
     /// Repeater ID for repeater connections (None for direct connections)
@@ -294,7 +293,7 @@ impl VncClient {
     /// # Arguments
     ///
     /// * `client_id` - The unique client ID assigned by the server.
-    /// * `stream` - The `TcpStream` representing the established connection to the VNC client.
+    /// * `stream` - A stream implementing `AsyncRead + AsyncWrite + Unpin + Send` representing the connection to the VNC client.
     /// * `framebuffer` - The `Framebuffer` instance that this client will receive updates from.
     /// * `desktop_name` - The name of the desktop to be sent to the client during `ServerInit`.
     /// * `password` - An optional password for VNC authentication. If `Some`, VNC authentication
@@ -306,21 +305,22 @@ impl VncClient {
     ///
     /// A `Result` which is `Ok(VncClient)` on successful handshake and initialization, or
     /// `Err(std::io::Error)` if an I/O error occurs during communication or handshake.
-    pub async fn new(
+    pub async fn new<S>(
         client_id: usize,
-        mut stream: TcpStream,
+        mut stream: S,
         framebuffer: Framebuffer,
         desktop_name: String,
         password: Option<String>,
         event_tx: mpsc::UnboundedSender<ClientEvent>,
-    ) -> Result<Self, std::io::Error> {
+    ) -> Result<Self, std::io::Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
         // Capture remote host address before handshake
-        let remote_host = stream
-            .peer_addr()
-            .map_or_else(|_| "unknown".to_string(), |addr| addr.to_string());
+        let remote_host = None; // Generic streams may not have peer_addr
 
         // Disable Nagle's algorithm for immediate frame delivery
-        stream.set_nodelay(true)?;
+        //stream.set_nodelay(true)?;
 
         // Send protocol version
         stream.write_all(PROTOCOL_VERSION.as_bytes()).await?;
@@ -389,13 +389,13 @@ impl VncClient {
         log::info!("VNC client handshake completed");
 
         // Split stream into read/write halves for lock-free shutdown
-        let (read_stream, write_stream) = stream.into_split();
+        let (read_stream, write_stream) = tokio::io::split(stream);
 
         let creation_time = Instant::now();
 
         Ok(Self {
-            read_stream,
-            write_stream: Arc::new(tokio::sync::Mutex::new(write_stream)),
+            read_stream: Box::new(read_stream),
+            write_stream: Arc::new(tokio::sync::Mutex::new(Box::new(write_stream))),
             framebuffer,
             pixel_format: RwLock::new(PixelFormat::rgba32()),
             encodings: RwLock::new(vec![ENCODING_RAW]),
@@ -484,7 +484,7 @@ impl VncClient {
     /// Enters the main message loop for the `VncClient`, handling incoming data from the client
     /// and periodically sending framebuffer updates.
     ///
-    /// This function continuously reads from the client's `TcpStream` and processes VNC messages
+    /// This function continuously reads from the client's stream and processes VNC messages
     /// such as `SetPixelFormat`, `SetEncodings`, `FramebufferUpdateRequest`, `KeyEvent`,
     /// `PointerEvent`, and `ClientCutText`. It also uses a `tokio::time::interval` to
     /// periodically check if batched framebuffer updates should be sent to the client,
@@ -1702,13 +1702,13 @@ impl VncClient {
     /// which will cause reads on the read half to fail naturally.
     pub fn get_write_stream_handle(
         &self,
-    ) -> Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>> {
+    ) -> Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Unpin + Send + Sync>>> {
         self.write_stream.clone()
     }
 
     /// Returns the remote host address of the connected client.
     pub fn get_remote_host(&self) -> &str {
-        &self.remote_host
+        self.remote_host.as_deref().unwrap_or("unknown")
     }
 
     /// Returns the destination port for repeater connections.

@@ -33,6 +33,7 @@ use log::error;
 use log::info;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 
@@ -49,6 +50,7 @@ static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 /// Represents a VNC server instance.
 ///
 /// This struct manages the VNC framebuffer, connected clients, and handles server-wide events.
+#[derive(Clone)]
 pub struct VncServer {
     /// The VNC framebuffer, representing the remote desktop screen.
     framebuffer: Framebuffer,
@@ -60,7 +62,7 @@ pub struct VncServer {
     clients: Arc<RwLock<Vec<Arc<RwLock<VncClient>>>>>,
     /// Write stream handles for direct socket shutdown
     client_write_streams:
-        Arc<RwLock<Vec<Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>>>>,
+        Arc<RwLock<Vec<Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Unpin + Send + Sync>>>>>>,
     /// Task handles for waiting on client threads to exit
     client_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     /// List of active client IDs for fast lookup during shutdown without locking `VncClient` objects.
@@ -139,10 +141,11 @@ impl VncServer {
         desktop_name: String,
         password: Option<String>,
     ) -> (Self, mpsc::UnboundedReceiver<ServerEvent>) {
+        let framebuffer = Framebuffer::new(width, height);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
         let server = Self {
-            framebuffer: Framebuffer::new(width, height),
+            framebuffer,
             desktop_name,
             password,
             clients: Arc::new(RwLock::new(Vec::new())),
@@ -229,6 +232,73 @@ impl VncServer {
         }
     }
 
+    /// Accept a VNC client connection from a generic stream.
+    ///
+    /// This method allows accepting VNC connections from any stream that implements
+    /// `AsyncRead + AsyncWrite + Unpin + Send`, such as TCP, UDP with reliability layer,
+    /// WebSocket, or other custom transports.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - A stream implementing `AsyncRead + AsyncWrite + Unpin + Send`
+    /// * `client_id` - Optional client ID. If None, a new ID will be generated.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the client was successfully handled, or an `std::io::Error` on failure.
+    pub async fn from_socket<S>(
+        &self,
+        stream: S,
+        client_id: Option<usize>,
+    ) -> Result<(), std::io::Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
+        // Generate client ID if not provided
+        let client_id = client_id.unwrap_or_else(|| {
+            let client_id_raw = NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst);
+            if client_id_raw == 0 || client_id_raw >= u64::MAX - 1000 {
+                // Wrap around to 1 if overflow
+                NEXT_CLIENT_ID.store(1, Ordering::SeqCst);
+                1
+            } else {
+                client_id_raw as usize
+            }
+        });
+
+        let framebuffer = self.framebuffer.clone();
+        let desktop_name = self.desktop_name.clone();
+        let password = self.password.clone();
+        let clients = self.clients.clone();
+        let client_write_streams = self.client_write_streams.clone();
+        let client_tasks = self.client_tasks.clone();
+        let client_ids = self.client_ids.clone();
+        let server_event_tx = self.event_tx.clone();
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = Self::handle_client(
+                stream,
+                client_id,
+                framebuffer,
+                desktop_name,
+                password,
+                clients,
+                client_write_streams,
+                client_tasks,
+                client_ids,
+                server_event_tx,
+            )
+            .await
+            {
+                error!("Client {client_id} error: {e}");
+            }
+        });
+
+        // Store the handle_client task handle for joining later
+        self.client_tasks.write().await.push(handle);
+        Ok(())
+    }
+
     /// Handles a newly connected VNC client through its entire lifecycle.
     ///
     /// This function performs the VNC handshake, creates a `VncClient` instance, spawns
@@ -253,20 +323,23 @@ impl VncServer {
     ///
     /// `Ok(())` when the client disconnects normally, or `Err` if an I/O error occurs.
     #[allow(clippy::too_many_arguments)] // VNC protocol handler requires all shared server state
-    async fn handle_client(
-        stream: TcpStream,
+    async fn handle_client<S>(
+        stream: S,
         client_id: usize,
         framebuffer: Framebuffer,
         desktop_name: String,
         password: Option<String>,
         clients: Arc<RwLock<Vec<Arc<RwLock<VncClient>>>>>,
         client_write_streams: Arc<
-            RwLock<Vec<Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>>>,
+            RwLock<Vec<Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Unpin + Send + Sync>>>>>,
         >,
         client_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
         client_ids: Arc<RwLock<Vec<usize>>>,
         server_event_tx: mpsc::UnboundedSender<ServerEvent>,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), std::io::Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
         let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
         let client = VncClient::new(
@@ -305,7 +378,7 @@ impl VncServer {
         let client_arc_clone = client_arc.clone();
         let msg_handle = tokio::spawn(async move {
             let result = {
-                let mut client = client_arc_clone.write().await;
+                let mut client: tokio::sync::RwLockWriteGuard<'_, VncClient> = client_arc_clone.write().await;
                 client.handle_messages().await
             };
             if let Err(e) = result {
@@ -486,13 +559,13 @@ impl VncServer {
                     );
 
                     match client_result {
-                        Ok(mut client) => {
-                            // Set connection metadata for client management APIs
-                            client.set_connection_metadata(Some(port));
-
+                        Ok(client) => {
                             log::info!("Reverse connection {client_id} established");
 
                             let client_arc = Arc::new(RwLock::new(client));
+
+                            // Set connection metadata for client management APIs
+                            client_arc.write().await.set_connection_metadata(Some(port));
 
                             // Register client to receive dirty region notifications
                             let regions_arc = client_arc.read().await.get_receiver_handle();
@@ -501,32 +574,27 @@ impl VncServer {
 
                             // Store the write stream handle for direct socket shutdown
                             let write_stream_handle = {
-                                let client = client_arc.read().await;
-                                client.get_write_stream_handle()
+                                let client_guard = client_arc.read().await;
+                                client_guard.get_write_stream_handle()
                             };
                             client_write_streams.write().await.push(write_stream_handle);
 
                             clients.write().await.push(client_arc.clone());
                             client_ids.write().await.push(client_id);
 
-                            let _ =
-                                server_event_tx.send(ServerEvent::ClientConnected { client_id });
+                            let _ = server_event_tx.send(ServerEvent::ClientConnected { client_id });
 
                             // Spawn task to handle client messages
                             let client_arc_clone = client_arc.clone();
                             let msg_handle = tokio::spawn(async move {
                                 let result = {
-                                    let mut client = client_arc_clone.write().await;
+                                    let mut client: tokio::sync::RwLockWriteGuard<'_, VncClient> = client_arc_clone.write().await;
                                     client.handle_messages().await
                                 };
                                 if let Err(e) = result {
-                                    error!(
-                                        "Reverse client {client_id} message handling error: {e}"
-                                    );
+                                    error!("Client {client_id} error: {e}");
                                 }
                             });
-
-                            // Store the message handler task handle
                             client_tasks.write().await.push(msg_handle);
 
                             // Handle client events
@@ -697,7 +765,7 @@ impl VncServer {
                     let client_arc_clone = client_arc.clone();
                     let msg_handle = tokio::spawn(async move {
                         let result = {
-                            let mut client = client_arc_clone.write().await;
+                            let mut client: tokio::sync::RwLockWriteGuard<'_, VncClient> = client_arc_clone.write().await;
                             client.handle_messages().await
                         };
                         if let Err(e) = result {
