@@ -41,6 +41,14 @@ path = "examples/simple_server.rs"
 name = "headless_server"
 path = "examples/headless_server.rs"
 
+[[example]]
+name = "generic_stream"
+path = "examples/generic_stream.rs"
+
+[[example]]
+name = "from_socket_demo"
+path = "examples/from_socket_demo.rs"
+
 [profile.release]
 lto = true              # Link-time optimization
 codegen-units = 1       # Better optimization
